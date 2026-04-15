@@ -1,0 +1,7 @@
+bin/
+dist/
+tmp/
+coverage.out
+.env
+node_modules/
+.lefthook-local.yml

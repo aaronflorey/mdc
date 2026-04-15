@@ -1,0 +1,44 @@
+version: "3"
+
+tasks:
+  setup:
+    cmds:
+      - go mod tidy
+      - task hooks:install
+
+  run:
+    cmds:
+      - go run . {{.CLI_ARGS}}
+
+  lint:
+    cmds:
+      - go fmt ./...
+      - go vet ./...
+      - go run github.com/golangci/golangci-lint/cmd/golangci-lint@v1.63.4 run ./...
+      - go run honnef.co/go/tools/cmd/staticcheck@v0.5.1 ./...
+
+  test:
+    cmds:
+      - go test ./...
+
+  test:integration:
+    cmds:
+      - go test -tags=integration ./...
+
+  build:
+    cmds:
+      - mkdir -p dist
+      - GOOS=linux GOARCH=amd64 go build -o dist/mdc-linux-amd64 ./
+
+  ci:
+    cmds:
+      - task lint
+      - task test
+
+  hooks:install:
+    cmds:
+      - go run github.com/evilmartians/lefthook@v1.7.22 install
+
+  release:snapshot:
+    cmds:
+      - goreleaser release --snapshot --clean
