@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/aaronflorey/mdc/compare/v0.2.0...v0.2.1) (2026-04-15)
+
+
+### Bug Fixes
+
+* **release:** Match Homebrew archive ids ([1375f99](https://github.com/aaronflorey/mdc/commit/1375f9922a554d14d949f9cceaca72a2c865aac7))
+
 ## [0.2.0](https://github.com/aaronflorey/mdc/compare/v0.1.0...v0.2.0) (2026-04-15)
 
 
