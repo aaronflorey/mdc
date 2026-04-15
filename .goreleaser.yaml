@@ -1,0 +1,63 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: mdc
+
+builds:
+  - id: mdc
+    main: .
+    binary: mdc
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X github.com/aaronflorey/multi-docker-compose/internal/version.Version={{ .Version }}
+      - -X github.com/aaronflorey/multi-docker-compose/internal/version.Commit={{ .Commit }}
+      - -X github.com/aaronflorey/multi-docker-compose/internal/version.Date={{ .Date }}
+
+nfpms:
+  - id: linux-packages
+    package_name: mdc
+    formats: [deb, rpm]
+    bindir: /usr/local/bin
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: checksums.txt
+
+brews:
+  - ids: ["mdc"]
+    commit_author:
+      name: github-actions[bot]
+      email: 41898282+github-actions[bot]@users.noreply.github.com
+    repository:
+      owner: aaronflorey
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/aaronflorey/multi-docker-compose"
+    description: "Run docker compose across multiple projects"
+    license: MIT
+    install: |
+      bin.install "mdc"
+    test: |
+      system "#{bin}/mdc", "--help"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
