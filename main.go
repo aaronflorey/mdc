@@ -10,11 +10,13 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/aaronflorey/multi-docker-compose/internal/version"
 )
@@ -70,7 +72,10 @@ type psRow struct {
 }
 
 func main() {
-	code := runCLI(context.Background(), os.Stdout, os.Stderr, os.Args[1:], execCompose)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	code := runCLI(ctx, os.Stdout, os.Stderr, os.Args[1:], execCompose)
 	os.Exit(code)
 }
 

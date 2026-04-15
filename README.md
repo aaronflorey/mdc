@@ -56,6 +56,7 @@ mdc [mdc flags] <docker compose args...>
 - Non-`ps` commands print grouped output per project in sorted directory order.
 - `mdc ps` tries `docker compose ps --format json`, merges results into one table, and falls back to stitched text when JSON is unavailable.
 - Exit code is non-zero if any compose target fails.
+- Ctrl-C cancels the shared run context so in-flight `docker compose` processes stop together.
 - `mdc` only parses its own flags (`--depth`, `--jobs`, `--quiet-targets`) and passes everything else through to `docker compose`.
 
 ## Development
