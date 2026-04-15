@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"os"
 	"os/exec"
@@ -327,8 +328,7 @@ func canonicalComposeFile(dir string) (string, bool, error) {
 }
 
 func execCompose(ctx context.Context, stack target, args []string) commandResult {
-	commandArgs := []string{"compose", "-f", stack.File, "--project-directory", stack.Dir}
-	commandArgs = append(commandArgs, args...)
+	commandArgs := composeCommandArgs(stack, args)
 
 	cmd := exec.CommandContext(ctx, "docker", commandArgs...)
 	var stdout bytes.Buffer
@@ -353,6 +353,53 @@ func execCompose(ctx context.Context, stack target, args []string) commandResult
 		exitCode: exitCode,
 		err:      err,
 	}
+}
+
+func composeCommandArgs(stack target, args []string) []string {
+	commandArgs := []string{
+		"compose",
+		"--project-name", composeProjectName(stack.Dir),
+		"-f", stack.File,
+		"--project-directory", stack.Dir,
+	}
+	commandArgs = append(commandArgs, args...)
+	return commandArgs
+}
+
+func composeProjectName(dir string) string {
+	cleanedDir := filepath.Clean(dir)
+	if absoluteDir, err := filepath.Abs(cleanedDir); err == nil {
+		cleanedDir = absoluteDir
+	}
+
+	base := sanitizeComposeProjectComponent(filepath.Base(cleanedDir))
+	if base == "" {
+		base = "root"
+	}
+
+	hasher := fnv.New64a()
+	_, _ = hasher.Write([]byte(filepath.ToSlash(cleanedDir)))
+
+	return fmt.Sprintf("mdc-%s-%x", base, hasher.Sum64())
+}
+
+func sanitizeComposeProjectComponent(value string) string {
+	value = strings.ToLower(value)
+
+	var builder strings.Builder
+	lastSeparator := false
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			builder.WriteRune(r)
+			lastSeparator = false
+		case builder.Len() > 0 && !lastSeparator:
+			builder.WriteByte('-')
+			lastSeparator = true
+		}
+	}
+
+	return strings.Trim(builder.String(), "-")
 }
 
 func executeTargets(ctx context.Context, targets []target, args []string, jobs int, runner composeRunner) []commandResult {
