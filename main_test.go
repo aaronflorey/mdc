@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -87,6 +88,45 @@ func TestParseArgsAllowsLeadingDockerComposeFlags(t *testing.T) {
 func TestShouldMergePSSkipsLeadingComposeFlags(t *testing.T) {
 	if !shouldMergePS([]string{"--ansi", "never", "ps"}) {
 		t.Fatal("expected top-level ps after compose flags to be merged")
+	}
+}
+
+func TestComposeProjectNameIsStableAndUnique(t *testing.T) {
+	first := composeProjectName(filepath.Join(string(os.PathSeparator), "tmp", "services", "app"))
+	second := composeProjectName(filepath.Join(string(os.PathSeparator), "srv", "examples", "app"))
+	repeated := composeProjectName(filepath.Join(string(os.PathSeparator), "tmp", "services", "app"))
+
+	if first != repeated {
+		t.Fatalf("expected stable project name, got %q and %q", first, repeated)
+	}
+	if first == second {
+		t.Fatalf("expected different project names for different directories, got %q", first)
+	}
+	if !regexp.MustCompile(`^mdc-[a-z0-9]+(?:-[a-z0-9]+)*-[0-9a-f]+$`).MatchString(first) {
+		t.Fatalf("unexpected project name format: %q", first)
+	}
+}
+
+func TestComposeCommandArgsIncludeProjectName(t *testing.T) {
+	dirOne := filepath.Join(string(os.PathSeparator), "tmp", "services", "app")
+	dirTwo := filepath.Join(string(os.PathSeparator), "srv", "examples", "app")
+
+	argsOne := composeCommandArgs(target{Dir: dirOne, File: filepath.Join(dirOne, "compose.yaml")}, []string{"up", "-d"})
+	argsTwo := composeCommandArgs(target{Dir: dirTwo, File: filepath.Join(dirTwo, "compose.yaml")}, []string{"up", "-d"})
+
+	projectOne := valueAfterFlag(argsOne, "--project-name")
+	projectTwo := valueAfterFlag(argsTwo, "--project-name")
+	if projectOne == "" || projectTwo == "" {
+		t.Fatalf("expected project names in args, got %v and %v", argsOne, argsTwo)
+	}
+	if projectOne == projectTwo {
+		t.Fatalf("expected distinct project names, got %q", projectOne)
+	}
+	if got := strings.Join(argsOne[len(argsOne)-2:], " "); got != "up -d" {
+		t.Fatalf("expected docker compose args at the end, got %v", argsOne)
+	}
+	if valueAfterFlag(argsOne, "-f") != filepath.Join(dirOne, "compose.yaml") {
+		t.Fatalf("expected compose file in args, got %v", argsOne)
 	}
 }
 
@@ -294,4 +334,13 @@ func mustWriteFile(t *testing.T, path string) {
 	if err := os.WriteFile(path, []byte("services: {}\n"), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
+}
+
+func valueAfterFlag(args []string, flag string) string {
+	for i, arg := range args {
+		if arg == flag && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
 }

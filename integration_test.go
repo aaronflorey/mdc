@@ -72,6 +72,60 @@ func TestRunCLIWithRealDockerCompose(t *testing.T) {
 	})
 }
 
+func TestRunCLIUsesDistinctProjectNamesForSameBasenameDirectories(t *testing.T) {
+	requireDockerCompose(t)
+
+	root := t.TempDir()
+	firstCompose := filepath.Join(root, "services", "app", "compose.yaml")
+	secondCompose := filepath.Join(root, "examples", "app", "compose.yaml")
+
+	mustWriteComposeFixture(t, firstCompose, "svc")
+	mustWriteComposeFixture(t, secondCompose, "svc")
+
+	t.Cleanup(func() {
+		dockerComposeDown(t, filepath.Dir(firstCompose), firstCompose)
+		dockerComposeDown(t, filepath.Dir(secondCompose), secondCompose)
+	})
+
+	withWorkingDirectory(t, root, func() {
+		var upStdout bytes.Buffer
+		var upStderr bytes.Buffer
+		if code := runCLI(context.Background(), &upStdout, &upStderr, []string{"--depth", "2", "up", "-d"}, execCompose); code != 0 {
+			t.Fatalf("mdc up -d failed with code %d\nstdout:\n%s\nstderr:\n%s", code, upStdout.String(), upStderr.String())
+		}
+
+		var psStdout string
+		deadline := time.Now().Add(20 * time.Second)
+		for {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := runCLI(context.Background(), &stdout, &stderr, []string{"--depth", "2", "ps"}, execCompose)
+			if code == 0 {
+				psStdout = stdout.String()
+				if countPSRows(psStdout) == 2 {
+					break
+				}
+			}
+
+			if time.Now().After(deadline) {
+				t.Fatalf("mdc ps did not show both colliding basenames\nstdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
+			}
+
+			time.Sleep(500 * time.Millisecond)
+		}
+
+		if strings.Count(psStdout, "mdc-app-") != 2 {
+			t.Fatalf("expected distinct project-name prefixes in merged ps output, got:\n%s", psStdout)
+		}
+
+		var downStdout bytes.Buffer
+		var downStderr bytes.Buffer
+		if code := runCLI(context.Background(), &downStdout, &downStderr, []string{"--depth", "2", "down", "--remove-orphans", "--volumes"}, execCompose); code != 0 {
+			t.Fatalf("mdc down failed with code %d\nstdout:\n%s\nstderr:\n%s", code, downStdout.String(), downStderr.String())
+		}
+	})
+}
+
 func requireDockerCompose(t *testing.T) {
 	t.Helper()
 
@@ -109,7 +163,7 @@ func mustWriteComposeFixture(t *testing.T, path string, serviceName string) {
 func dockerComposeDown(t *testing.T, dir string, composeFile string) {
 	t.Helper()
 
-	cmd := exec.Command("docker", "compose", "-f", composeFile, "--project-directory", dir, "down", "--remove-orphans", "--volumes")
+	cmd := exec.Command("docker", "compose", "--project-name", composeProjectName(dir), "-f", composeFile, "--project-directory", dir, "down", "--remove-orphans", "--volumes")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Logf("cleanup failed for %s: %v\n%s", dir, err, string(output))
