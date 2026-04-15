@@ -28,7 +28,9 @@ nfpms:
     bindir: /usr/local/bin
 
 archives:
-  - formats: [tar.gz]
+  - id: mdc
+    builds: [mdc]
+    formats: [tar.gz]
     format_overrides:
       - goos: windows
         formats: [zip]
