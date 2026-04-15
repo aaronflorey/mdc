@@ -21,7 +21,7 @@ jobs:
           cache-dependency-path: go.mod
       - uses: golangci/golangci-lint-action@v8
         with:
-          version: latest
+          version: v1.63.4
           args: --timeout=5m ./...
       - run: go run honnef.co/go/tools/cmd/staticcheck@v0.5.1 ./...
 
