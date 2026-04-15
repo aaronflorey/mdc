@@ -394,12 +394,34 @@ func shouldMergePS(args []string) bool {
 }
 
 func psCommandIndex(args []string) int {
-	for i, arg := range args {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if composeGlobalFlagTakesValue(arg) {
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
 		if arg == "ps" {
 			return i
 		}
+		return -1
 	}
 	return -1
+}
+
+func composeGlobalFlagTakesValue(arg string) bool {
+	if strings.Contains(arg, "=") {
+		return false
+	}
+
+	switch arg {
+	case "--ansi", "--env-file", "-f", "--file", "--parallel", "-p", "--project-name", "--profile", "--progress", "--project-directory":
+		return true
+	default:
+		return false
+	}
 }
 
 func psFormat(args []string, psIndex int) (string, bool) {

@@ -84,6 +84,20 @@ func TestParseArgsAllowsLeadingDockerComposeFlags(t *testing.T) {
 	}
 }
 
+func TestShouldMergePSSkipsLeadingComposeFlags(t *testing.T) {
+	if !shouldMergePS([]string{"--ansi", "never", "ps"}) {
+		t.Fatal("expected top-level ps after compose flags to be merged")
+	}
+}
+
+func TestShouldMergePSIgnoresNestedPSArguments(t *testing.T) {
+	for _, args := range [][]string{{"exec", "app", "ps", "aux"}, {"run", "worker", "ps"}} {
+		if shouldMergePS(args) {
+			t.Fatalf("expected args %v to bypass merged ps handling", args)
+		}
+	}
+}
+
 func TestRunCLIReportsNonZeroWhenAnyTargetFails(t *testing.T) {
 	root := t.TempDir()
 	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
@@ -233,6 +247,42 @@ func TestRunCLIFallsBackToTextPSWhenJSONFails(t *testing.T) {
 		if remaining != 0 {
 			t.Fatalf("expected call %q exactly once, got %v", call, calls)
 		}
+	}
+}
+
+func TestRunCLIPassesThroughNestedPSArguments(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(wd)
+	}()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	var received []string
+	runner := func(_ context.Context, stack target, args []string) commandResult {
+		received = append([]string(nil), args...)
+		return commandResult{target: stack, stdout: "ok"}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"exec", "app", "ps", "aux"}, runner)
+
+	if code != 0 {
+		t.Fatalf("expected success, got %d with stderr %q", code, stderr.String())
+	}
+	if strings.Join(received, " ") != "exec app ps aux" {
+		t.Fatalf("expected passthrough args, got %v", received)
+	}
+	if !strings.Contains(stdout.String(), "[.]\nok") {
+		t.Fatalf("expected standard output, got %q", stdout.String())
 	}
 }
 
