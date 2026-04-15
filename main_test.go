@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -176,6 +177,52 @@ func TestRunCLIReportsNonZeroWhenAnyTargetFails(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "api (boom)") {
 		t.Fatalf("expected failure summary, got %q", stderr.String())
+	}
+}
+
+func TestRunCLIPropagatesContextCancellation(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(wd)
+	}()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var started atomic.Int32
+	runner := func(ctx context.Context, stack target, args []string) commandResult {
+		if strings.Join(args, " ") != "up -d" {
+			t.Fatalf("unexpected args: %v", args)
+		}
+		if started.Add(1) == 2 {
+			cancel()
+		}
+		<-ctx.Done()
+		return commandResult{target: stack, stderr: ctx.Err().Error(), exitCode: 130, err: ctx.Err()}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(ctx, &stdout, &stderr, []string{"up", "-d"}, runner)
+
+	if code != 130 {
+		t.Fatalf("expected exit code 130, got %d", code)
+	}
+	if started.Load() != 2 {
+		t.Fatalf("expected both targets to start before cancellation, got %d", started.Load())
+	}
+	if !strings.Contains(stderr.String(), context.Canceled.Error()) {
+		t.Fatalf("expected cancellation in stderr, got %q", stderr.String())
 	}
 }
 
