@@ -92,6 +92,59 @@ func TestShouldMergePSSkipsLeadingComposeFlags(t *testing.T) {
 	}
 }
 
+func TestPSCommandIndexRecognizesTopLevelPS(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want int
+	}{
+		{name: "bare ps", args: []string{"ps"}, want: 0},
+		{name: "leading flag with value", args: []string{"--ansi", "never", "ps"}, want: 2},
+		{name: "leading flag with equals", args: []string{"--ansi=never", "ps"}, want: 1},
+		{name: "short flag with value", args: []string{"-p", "demo", "ps"}, want: 2},
+		{name: "repeated file flags", args: []string{"-f", "a.yml", "-f", "b.yml", "ps"}, want: 4},
+		{name: "long flags with values", args: []string{"--file", "compose.yml", "--project-directory", "./x", "ps"}, want: 4},
+		{name: "long flags with equals", args: []string{"--file=compose.yml", "--project-directory=./x", "ps"}, want: 2},
+		{name: "profile env parallel progress flags", args: []string{"--profile", "web", "--env-file", ".env", "--parallel", "2", "--progress", "tty", "ps"}, want: 8},
+		{name: "first subcommand wins", args: []string{"up", "ps"}, want: -1},
+		{name: "nested ps after flags", args: []string{"--ansi", "never", "exec", "app", "ps"}, want: -1},
+		{name: "malformed file flag consumes ps", args: []string{"--file", "ps"}, want: -1},
+		{name: "unknown leading flag stops parse", args: []string{"--unknown", "value", "ps"}, want: -1},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := psCommandIndex(test.args); got != test.want {
+				t.Fatalf("expected index %d, got %d for %v", test.want, got, test.args)
+			}
+		})
+	}
+}
+
+func TestShouldMergePSRespectsFormatAndNesting(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "bare ps", args: []string{"ps"}, want: true},
+		{name: "leading flag before ps", args: []string{"--ansi", "never", "ps"}, want: true},
+		{name: "explicit non-json format", args: []string{"ps", "--format", "table"}, want: false},
+		{name: "explicit json format with equals", args: []string{"ps", "--format=json"}, want: true},
+		{name: "explicit json format case insensitive", args: []string{"ps", "--format", "JSON"}, want: true},
+		{name: "malformed format flag", args: []string{"ps", "--format"}, want: false},
+		{name: "nested ps under exec", args: []string{"exec", "app", "ps", "aux"}, want: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := shouldMergePS(test.args); got != test.want {
+				t.Fatalf("expected merge=%t, got %t for %v", test.want, got, test.args)
+			}
+		})
+	}
+}
+
 func TestComposeProjectNameIsStableAndUnique(t *testing.T) {
 	first := composeProjectName(filepath.Join(string(os.PathSeparator), "tmp", "services", "app"))
 	second := composeProjectName(filepath.Join(string(os.PathSeparator), "srv", "examples", "app"))
