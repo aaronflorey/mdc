@@ -18,7 +18,7 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/aaronflorey/multi-docker-compose/internal/version"
+	"github.com/aaronflorey/mdc/internal/version"
 )
 
 const (

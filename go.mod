@@ -1,3 +1,3 @@
-module github.com/aaronflorey/multi-docker-compose
+module github.com/aaronflorey/mdc
 
 go 1.23.0

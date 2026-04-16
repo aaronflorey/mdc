@@ -17,19 +17,20 @@ builds:
       - amd64
       - arm64
     ldflags:
-      - -s -w -X github.com/aaronflorey/multi-docker-compose/internal/version.Version={{ .Version }}
-      - -X github.com/aaronflorey/multi-docker-compose/internal/version.Commit={{ .Commit }}
-      - -X github.com/aaronflorey/multi-docker-compose/internal/version.Date={{ .Date }}
+      - -s -w -X github.com/aaronflorey/mdc/internal/version.Version={{ .Version }}
+      - -X github.com/aaronflorey/mdc/internal/version.Commit={{ .Commit }}
+      - -X github.com/aaronflorey/mdc/internal/version.Date={{ .Date }}
 
 nfpms:
   - id: linux-packages
     package_name: mdc
     formats: [deb, rpm]
     bindir: /usr/local/bin
+    maintainer: Aaron Florey <azza@jcaks.net>
 
 archives:
   - id: mdc
-    builds: [mdc]
+    ids: [mdc]
     formats: [tar.gz]
     format_overrides:
       - goos: windows
@@ -48,7 +49,7 @@ brews:
       name: homebrew-tap
       branch: main
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    homepage: "https://github.com/aaronflorey/multi-docker-compose"
+    homepage: "https://github.com/aaronflorey/mdc"
     description: "Run docker compose across multiple projects"
     license: MIT
     install: |
