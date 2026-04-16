@@ -2,25 +2,23 @@
 
 Run one `docker compose` command across every compose project in a directory tree.
 
-[![CI](https://github.com/aaronflorey/mdc/actions/workflows/ci.yml/badge.svg)](https://github.com/aaronflorey/mdc/actions/workflows/ci.yml)
-[![Build](https://github.com/aaronflorey/mdc/actions/workflows/build.yml/badge.svg)](https://github.com/aaronflorey/mdc/actions/workflows/build.yml)
-[![Latest Release](https://img.shields.io/github/v/release/aaronflorey/mdc?label=release)](https://github.com/aaronflorey/mdc/releases)
+[![License](https://img.shields.io/github/license/aaronflorey/mdc)](LICENSE)
+[![CI](https://github.com/aaronflorey/mdc/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/aaronflorey/mdc/actions/workflows/ci.yml)
+[![Latest Release](https://img.shields.io/github/v/release/aaronflorey/mdc?sort=semver)](https://github.com/aaronflorey/mdc/releases)
 
 `mdc` discovers `compose.yaml`, `compose.yml`, `docker-compose.yaml`, and `docker-compose.yml`, picks one canonical file per directory, and runs the same `docker compose` command for each target.
 
 ## Installation
 
-Install with either Homebrew or `bin`:
-
 ```bash
 # Homebrew
 brew install aaronflorey/tap/mdc
 
-# bin
-bin install github.com/aaronflorey/mdc
+# Go
+go install github.com/aaronflorey/mdc@latest
 ```
 
-`bin` project: https://github.com/aaronflorey/bin
+Prebuilt binaries are also published on the [GitHub releases page](https://github.com/aaronflorey/mdc/releases).
 
 ## Quick Start
 
@@ -43,6 +41,15 @@ mdc [mdc flags] <docker compose args...>
 - `--depth`: scan depth (`0` = current directory only, default `1`)
 - `--jobs`: max concurrent `docker compose` processes (`0` = all targets)
 - `--quiet-targets`: suppress per-target section headers for non-merged output
+
+## Setup
+
+```bash
+git clone https://github.com/aaronflorey/mdc.git
+cd mdc
+task setup
+task ci
+```
 
 ## How It Works
 
@@ -73,3 +80,14 @@ task ci
 `task run -- ps` forwards arguments to `go run .`.
 
 `task test:integration` requires a working local Docker Engine with `docker compose` available.
+
+## Releases
+
+Releases use `release-please` for versioning and changelog management. Merged Conventional Commits are collected into a release PR, and merging that PR creates a `vX.Y.Z` tag, publishes release archives with GoReleaser, and updates the `aaronflorey/homebrew-tap` formula.
+
+## Project Files
+
+- [Contributing Guide](CONTRIBUTING.md)
+- [Security Policy](SECURITY.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+- [MIT License](LICENSE)

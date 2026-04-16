@@ -1,12 +1,14 @@
-name: Build
+name: Release
 
 on:
   push:
-    branches: ["main"]
+    branches:
+      - main
+      - master
   workflow_dispatch:
 
 concurrency:
-  group: build-${{ github.workflow }}-${{ github.ref }}
+  group: release-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
