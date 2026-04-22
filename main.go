@@ -59,9 +59,18 @@ type commandResult struct {
 	stderr   string
 	exitCode int
 	err      error
+	streamed bool
 }
 
-type composeRunner func(context.Context, target, []string) commandResult
+type composeRunner func(context.Context, target, []string, io.Writer, io.Writer) commandResult
+
+type outputMode int
+
+const (
+	outputModeBuffered outputMode = iota
+	outputModeInterleaved
+	outputModePassthrough
+)
 
 type psRow struct {
 	Name    string
@@ -116,7 +125,13 @@ func runCLI(ctx context.Context, stdout io.Writer, stderr io.Writer, argv []stri
 		return runPS(ctx, stdout, stderr, targets, opts, composeArgs, runner)
 	}
 
-	results := executeTargets(ctx, targets, composeArgs, opts.jobs, runner)
+	mode, err := outputModeForArgs(composeArgs, opts.jobs, len(targets))
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+
+	results := executeTargets(ctx, targets, composeArgs, opts.jobs, runner, outputWriters(mode, stdout, stderr))
 	writeStandardOutput(stdout, results, opts.quietTargets)
 
 	if failures := failureResults(results); len(failures) > 0 {
@@ -332,16 +347,36 @@ func canonicalComposeFile(dir string) (string, bool, error) {
 	return "", false, nil
 }
 
-func execCompose(ctx context.Context, stack target, args []string) commandResult {
+func execCompose(ctx context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
 	commandArgs := composeCommandArgs(stack, args)
 
 	cmd := exec.CommandContext(ctx, "docker", commandArgs...)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	cmd.Dir = stack.Dir
+	var stdoutBuffer bytes.Buffer
+	var stderrBuffer bytes.Buffer
+	streamed := false
+	if liveStdout := terminalWriter(stdout); liveStdout != nil {
+		cmd.Stdout = liveStdout
+		streamed = true
+	} else if shouldStreamOutput(stdout) {
+		cmd.Stdout = stdout
+		streamed = true
+	} else {
+		cmd.Stdout = &stdoutBuffer
+	}
+	if liveStderr := terminalWriter(stderr); liveStderr != nil {
+		cmd.Stderr = liveStderr
+		streamed = true
+	} else if shouldStreamOutput(stderr) {
+		cmd.Stderr = stderr
+		streamed = true
+	} else {
+		cmd.Stderr = &stderrBuffer
+	}
 
 	err := cmd.Run()
+	finishStreamingOutput(cmd.Stdout)
+	finishStreamingOutput(cmd.Stderr)
 	exitCode := 0
 	if err != nil {
 		exitCode = 1
@@ -353,11 +388,110 @@ func execCompose(ctx context.Context, stack target, args []string) commandResult
 
 	return commandResult{
 		target:   stack,
-		stdout:   stdout.String(),
-		stderr:   stderr.String(),
+		stdout:   stdoutBuffer.String(),
+		stderr:   stderrBuffer.String(),
 		exitCode: exitCode,
 		err:      err,
+		streamed: streamed,
 	}
+}
+
+type streamOutputWriter interface {
+	io.Writer
+	streamOutputWriter()
+}
+
+type streamingOutputFinisher interface {
+	finishStreamingOutput()
+}
+
+func shouldStreamOutput(w io.Writer) bool {
+	_, ok := w.(streamOutputWriter)
+	return ok
+}
+
+func finishStreamingOutput(w io.Writer) {
+	finisher, ok := w.(streamingOutputFinisher)
+	if !ok {
+		return
+	}
+	finisher.finishStreamingOutput()
+}
+
+func terminalWriter(w io.Writer) *os.File {
+	file, ok := w.(*os.File)
+	if !ok {
+		return nil
+	}
+
+	info, err := file.Stat()
+	if err != nil {
+		return nil
+	}
+	if info.Mode()&os.ModeCharDevice == 0 {
+		return nil
+	}
+
+	return file
+}
+
+type linePrefixWriter struct {
+	dest        io.Writer
+	prefix      string
+	mu          *sync.Mutex
+	atLineStart bool
+}
+
+func (w *linePrefixWriter) streamOutputWriter() {}
+
+func (w *linePrefixWriter) finishStreamingOutput() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.atLineStart {
+		return
+	}
+	_, _ = io.WriteString(w.dest, "\n")
+	w.atLineStart = true
+}
+
+func (w *linePrefixWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	start := 0
+	for start < len(p) {
+		if w.atLineStart {
+			if _, err := io.WriteString(w.dest, w.prefix); err != nil {
+				return len(p), err
+			}
+			w.atLineStart = false
+		}
+
+		lineEnd := bytes.IndexAny(p[start:], "\r\n")
+		if lineEnd < 0 {
+			_, err := w.dest.Write(p[start:])
+			return len(p), err
+		}
+
+		lineEnd += start
+		if lineEnd > start {
+			if _, err := w.dest.Write(p[start:lineEnd]); err != nil {
+				return len(p), err
+			}
+		}
+		if _, err := io.WriteString(w.dest, "\n"); err != nil {
+			return len(p), err
+		}
+		w.atLineStart = true
+
+		start = lineEnd + 1
+		if p[lineEnd] == '\r' && start < len(p) && p[start] == '\n' {
+			start++
+		}
+	}
+
+	return len(p), nil
 }
 
 func composeCommandArgs(stack target, args []string) []string {
@@ -407,7 +541,9 @@ func sanitizeComposeProjectComponent(value string) string {
 	return strings.Trim(builder.String(), "-")
 }
 
-func executeTargets(ctx context.Context, targets []target, args []string, jobs int, runner composeRunner) []commandResult {
+type targetWriterFactory func(target) (io.Writer, io.Writer)
+
+func executeTargets(ctx context.Context, targets []target, args []string, jobs int, runner composeRunner, writers targetWriterFactory) []commandResult {
 	results := make([]commandResult, len(targets))
 	limit := jobs
 	if limit <= 0 || limit > len(targets) {
@@ -423,12 +559,78 @@ func executeTargets(ctx context.Context, targets []target, args []string, jobs i
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			results[index] = runner(ctx, stack, args)
+			stdout, stderr := writers(stack)
+			results[index] = runner(ctx, stack, args, stdout, stderr)
 		}(i, stack)
 	}
 
 	wg.Wait()
 	return results
+}
+
+func outputWriters(mode outputMode, stdout io.Writer, stderr io.Writer) targetWriterFactory {
+	switch mode {
+	case outputModePassthrough:
+		return func(target) (io.Writer, io.Writer) {
+			return stdout, stderr
+		}
+	case outputModeInterleaved:
+		var stdoutMu sync.Mutex
+		var stderrMu sync.Mutex
+		return func(stack target) (io.Writer, io.Writer) {
+			return &linePrefixWriter{dest: stdout, prefix: "[" + stack.Label + "] ", mu: &stdoutMu, atLineStart: true}, &linePrefixWriter{dest: stderr, prefix: "[" + stack.Label + "] ", mu: &stderrMu, atLineStart: true}
+		}
+	default:
+		return func(target) (io.Writer, io.Writer) {
+			return nil, nil
+		}
+	}
+}
+
+func outputModeForArgs(args []string, jobs int, targetCount int) (outputMode, error) {
+	command, _ := composeCommand(args)
+	parallel := parallelTargetCount(jobs, targetCount) > 1
+
+	if isInteractiveComposeCommand(command) {
+		if parallel {
+			return outputModeBuffered, fmt.Errorf("docker compose %s is interactive; rerun with --jobs 1", command)
+		}
+		return outputModePassthrough, nil
+	}
+
+	if isInterleavedComposeCommand(command) {
+		if parallel {
+			return outputModeInterleaved, nil
+		}
+		return outputModePassthrough, nil
+	}
+
+	return outputModeBuffered, nil
+}
+
+func parallelTargetCount(jobs int, targetCount int) int {
+	if jobs <= 0 || jobs > targetCount {
+		return targetCount
+	}
+	return jobs
+}
+
+func isInteractiveComposeCommand(command string) bool {
+	switch command {
+	case "attach", "exec", "run":
+		return true
+	default:
+		return false
+	}
+}
+
+func isInterleavedComposeCommand(command string) bool {
+	switch command {
+	case "build", "create", "down", "events", "logs", "pull", "restart", "start", "stop", "up":
+		return true
+	default:
+		return false
+	}
 }
 
 func shouldMergePS(args []string) bool {
@@ -446,6 +648,14 @@ func shouldMergePS(args []string) bool {
 }
 
 func psCommandIndex(args []string) int {
+	command, index := composeCommand(args)
+	if command == "ps" {
+		return index
+	}
+	return -1
+}
+
+func composeCommand(args []string) (string, int) {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if composeGlobalFlagTakesValue(arg) {
@@ -453,14 +663,14 @@ func psCommandIndex(args []string) int {
 			continue
 		}
 		if strings.HasPrefix(arg, "-") {
-			continue
+			if composeGlobalFlag(arg) {
+				continue
+			}
+			return "", -1
 		}
-		if arg == "ps" {
-			return i
-		}
-		return -1
+		return arg, i
 	}
-	return -1
+	return "", -1
 }
 
 func composeGlobalFlagTakesValue(arg string) bool {
@@ -468,12 +678,32 @@ func composeGlobalFlagTakesValue(arg string) bool {
 		return false
 	}
 
+	arg = composeGlobalFlagName(arg)
+
 	switch arg {
 	case "--ansi", "--env-file", "-f", "--file", "--parallel", "-p", "--project-name", "--profile", "--progress", "--project-directory":
 		return true
 	default:
 		return false
 	}
+}
+
+func composeGlobalFlag(arg string) bool {
+	arg = composeGlobalFlagName(arg)
+
+	switch arg {
+	case "--all-resources", "--ansi", "--compatibility", "--dry-run", "--env-file", "-f", "--file", "--parallel", "-p", "--project-name", "--profile", "--progress", "--project-directory":
+		return true
+	default:
+		return false
+	}
+}
+
+func composeGlobalFlagName(arg string) string {
+	if strings.Contains(arg, "=") {
+		arg, _, _ = strings.Cut(arg, "=")
+	}
+	return arg
 }
 
 func psFormat(args []string, psIndex int) (string, bool) {
@@ -493,7 +723,7 @@ func psFormat(args []string, psIndex int) (string, bool) {
 }
 
 func runPS(ctx context.Context, stdout io.Writer, stderr io.Writer, targets []target, opts options, composeArgs []string, runner composeRunner) int {
-	jsonResults := executeTargets(ctx, targets, psJSONArgs(composeArgs), opts.jobs, runner)
+	jsonResults := executeTargets(ctx, targets, psJSONArgs(composeArgs), opts.jobs, runner, outputWriters(outputModeBuffered, nil, nil))
 	rows, err := mergePSRows(jsonResults)
 	if err == nil {
 		if len(rows) == 0 {
@@ -504,7 +734,7 @@ func runPS(ctx context.Context, stdout io.Writer, stderr io.Writer, targets []ta
 		return 0
 	}
 
-	fallbackResults := executeTargets(ctx, targets, composeArgs, opts.jobs, runner)
+	fallbackResults := executeTargets(ctx, targets, composeArgs, opts.jobs, runner, outputWriters(outputModeBuffered, nil, nil))
 	merged := mergePSText(fallbackResults)
 	if merged != "" {
 		fmt.Fprint(stdout, merged)
@@ -763,7 +993,7 @@ func writeStandardOutput(stdout io.Writer, results []commandResult, quiet bool) 
 func targetOutput(result commandResult, quiet bool) string {
 	trimmedStdout := strings.TrimSpace(result.stdout)
 	trimmedStderr := strings.TrimSpace(result.stderr)
-	if trimmedStdout == "" && trimmedStderr == "" && result.exitCode == 0 {
+	if trimmedStdout == "" && trimmedStderr == "" && (result.exitCode == 0 || result.streamed) {
 		return ""
 	}
 

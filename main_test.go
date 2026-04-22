@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -145,6 +146,63 @@ func TestShouldMergePSRespectsFormatAndNesting(t *testing.T) {
 	}
 }
 
+func TestComposeCommandRecognizesTopLevelSubcommand(t *testing.T) {
+	tests := []struct {
+		name      string
+		args      []string
+		wantCmd   string
+		wantIndex int
+	}{
+		{name: "bare up", args: []string{"up", "-d"}, wantCmd: "up", wantIndex: 0},
+		{name: "leading flags", args: []string{"--ansi", "never", "logs", "-f"}, wantCmd: "logs", wantIndex: 2},
+		{name: "equals flags", args: []string{"--project-directory=demo", "pull"}, wantCmd: "pull", wantIndex: 1},
+		{name: "unknown flag stops parse", args: []string{"--unknown", "value", "up"}, wantCmd: "", wantIndex: -1},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			gotCmd, gotIndex := composeCommand(test.args)
+			if gotCmd != test.wantCmd || gotIndex != test.wantIndex {
+				t.Fatalf("expected (%q, %d), got (%q, %d)", test.wantCmd, test.wantIndex, gotCmd, gotIndex)
+			}
+		})
+	}
+}
+
+func TestOutputModeForArgsUsesCommandBehavior(t *testing.T) {
+	tests := []struct {
+		name      string
+		args      []string
+		jobs      int
+		targets   int
+		wantMode  outputMode
+		wantError string
+	}{
+		{name: "parallel up interleaves", args: []string{"up", "-d"}, jobs: 0, targets: 2, wantMode: outputModeInterleaved},
+		{name: "serial up passes through", args: []string{"up", "-d"}, jobs: 1, targets: 2, wantMode: outputModePassthrough},
+		{name: "config stays buffered", args: []string{"config"}, jobs: 0, targets: 2, wantMode: outputModeBuffered},
+		{name: "parallel exec rejected", args: []string{"exec", "app", "sh"}, jobs: 0, targets: 2, wantError: "docker compose exec is interactive; rerun with --jobs 1"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			gotMode, err := outputModeForArgs(test.args, test.jobs, test.targets)
+			if test.wantError != "" {
+				if err == nil || err.Error() != test.wantError {
+					t.Fatalf("expected error %q, got %v", test.wantError, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if gotMode != test.wantMode {
+				t.Fatalf("expected mode %v, got %v", test.wantMode, gotMode)
+			}
+		})
+	}
+}
+
 func TestComposeProjectNameIsStableAndUnique(t *testing.T) {
 	first := composeProjectName(filepath.Join(string(os.PathSeparator), "tmp", "services", "app"))
 	second := composeProjectName(filepath.Join(string(os.PathSeparator), "srv", "examples", "app"))
@@ -184,6 +242,44 @@ func TestComposeCommandArgsIncludeProjectName(t *testing.T) {
 	}
 }
 
+func TestExecComposeRunsInTargetDirectory(t *testing.T) {
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	targetDir := filepath.Join(root, "stack")
+	composeFile := filepath.Join(targetDir, "compose.yaml")
+
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", binDir, err)
+	}
+	mustWriteFile(t, composeFile)
+
+	scriptPath := filepath.Join(binDir, "docker")
+	script := "#!/bin/sh\npwd\nprintf '%s\\n' \"$@\"\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write %s: %v", scriptPath, err)
+	}
+
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	result := execCompose(context.Background(), target{Dir: targetDir, File: composeFile, Label: "."}, []string{"up", "-d"}, &stdout, &stderr)
+
+	if result.exitCode != 0 {
+		t.Fatalf("expected success, got %+v", result)
+	}
+	lines := strings.Split(strings.TrimSpace(result.stdout), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected cwd and args in stdout, got %q", result.stdout)
+	}
+	if lines[0] != targetDir {
+		t.Fatalf("expected cwd %q, got %q", targetDir, lines[0])
+	}
+	if strings.Join(lines[1:], " ") != strings.Join(composeCommandArgs(target{Dir: targetDir, File: composeFile}, []string{"up", "-d"}), " ") {
+		t.Fatalf("unexpected args: %q", result.stdout)
+	}
+}
+
 func TestShouldMergePSIgnoresNestedPSArguments(t *testing.T) {
 	for _, args := range [][]string{{"exec", "app", "ps", "aux"}, {"run", "worker", "ps"}} {
 		if shouldMergePS(args) {
@@ -208,7 +304,7 @@ func TestRunCLIReportsNonZeroWhenAnyTargetFails(t *testing.T) {
 		t.Fatalf("chdir: %v", err)
 	}
 
-	runner := func(_ context.Context, stack target, args []string) commandResult {
+	runner := func(_ context.Context, stack target, args []string, _ io.Writer, _ io.Writer) commandResult {
 		if strings.Join(args, " ") != "up -d" {
 			t.Fatalf("unexpected args: %v", args)
 		}
@@ -253,7 +349,7 @@ func TestRunCLIPropagatesContextCancellation(t *testing.T) {
 	defer cancel()
 
 	var started atomic.Int32
-	runner := func(ctx context.Context, stack target, args []string) commandResult {
+	runner := func(ctx context.Context, stack target, args []string, _ io.Writer, _ io.Writer) commandResult {
 		if strings.Join(args, " ") != "up -d" {
 			t.Fatalf("unexpected args: %v", args)
 		}
@@ -300,7 +396,7 @@ func TestRunCLIMergesPSJSONIntoSingleTable(t *testing.T) {
 		"api": `[{"ID":"2","Name":"api-web-1","Service":"web","State":"running","Publishers":[]}]`,
 	}
 
-	runner := func(_ context.Context, stack target, args []string) commandResult {
+	runner := func(_ context.Context, stack target, args []string, _ io.Writer, _ io.Writer) commandResult {
 		if got := strings.Join(args, " "); got != "ps --format json" {
 			t.Fatalf("unexpected args: %s", got)
 		}
@@ -346,7 +442,7 @@ func TestRunCLIFallsBackToTextPSWhenJSONFails(t *testing.T) {
 		mu    sync.Mutex
 		calls []string
 	)
-	runner := func(_ context.Context, stack target, args []string) commandResult {
+	runner := func(_ context.Context, stack target, args []string, _ io.Writer, _ io.Writer) commandResult {
 		mu.Lock()
 		calls = append(calls, stack.Label+":"+strings.Join(args, " "))
 		mu.Unlock()
@@ -406,7 +502,7 @@ func TestRunCLIPassesThroughNestedPSArguments(t *testing.T) {
 	}
 
 	var received []string
-	runner := func(_ context.Context, stack target, args []string) commandResult {
+	runner := func(_ context.Context, stack target, args []string, _ io.Writer, _ io.Writer) commandResult {
 		received = append([]string(nil), args...)
 		return commandResult{target: stack, stdout: "ok"}
 	}
@@ -423,6 +519,84 @@ func TestRunCLIPassesThroughNestedPSArguments(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "[.]\nok") {
 		t.Fatalf("expected standard output, got %q", stdout.String())
+	}
+}
+
+func TestRunCLIInterleavesLiveCommandOutput(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(wd)
+	}()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
+		if strings.Join(args, " ") != "up -d" {
+			t.Fatalf("unexpected args: %v", args)
+		}
+		if stdout == nil || stderr == nil {
+			t.Fatal("expected live writers for interleaved command")
+		}
+		if _, err := io.WriteString(stdout, "started\n"); err != nil {
+			t.Fatalf("write stdout: %v", err)
+		}
+		return commandResult{target: stack, streamed: true}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"up", "-d"}, runner)
+
+	if code != 0 {
+		t.Fatalf("expected success, got %d with stderr %q", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "[.] started\n") {
+		t.Fatalf("expected root target output, got %q", output)
+	}
+	if !strings.Contains(output, "[api] started\n") {
+		t.Fatalf("expected api target output, got %q", output)
+	}
+}
+
+func TestRunCLIRejectsParallelInteractiveCommands(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(wd)
+	}()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
+		t.Fatal("runner should not be invoked for invalid interactive parallel command")
+		return commandResult{}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"exec", "app", "sh"}, runner)
+
+	if code != 2 {
+		t.Fatalf("expected usage error, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "docker compose exec is interactive; rerun with --jobs 1") {
+		t.Fatalf("expected interactive command error, got %q", stderr.String())
 	}
 }
 
