@@ -126,6 +126,8 @@ func runCLI(ctx context.Context, stdout io.Writer, stderr io.Writer, argv []stri
 		return runPS(ctx, stdout, stderr, targets, opts, composeArgs, runner)
 	}
 
+	command, _ := composeCommand(composeArgs)
+
 	mode, err := outputModeForArgs(composeArgs, opts.jobs, len(targets))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -133,7 +135,11 @@ func runCLI(ctx context.Context, stdout io.Writer, stderr io.Writer, argv []stri
 	}
 
 	results := executeTargets(ctx, targets, composeArgs, opts.jobs, runner, outputWriters(mode, stdout, stderr))
-	writeStandardOutput(stdout, results, opts.quietTargets)
+	if command == "pull" {
+		writePullOutput(stdout, results)
+	} else {
+		writeStandardOutput(stdout, results, opts.quietTargets)
+	}
 
 	if failures := failureResults(results); len(failures) > 0 {
 		writeFailureSummary(stderr, failures)
@@ -614,6 +620,10 @@ func outputModeForArgs(args []string, jobs int, targetCount int) (outputMode, er
 	command, _ := composeCommand(args)
 	parallel := parallelTargetCount(jobs, targetCount) > 1
 
+	if command == "pull" {
+		return outputModeBuffered, nil
+	}
+
 	if isInteractiveComposeCommand(command) {
 		if parallel {
 			return outputModeBuffered, fmt.Errorf("docker compose %s is interactive; rerun with --jobs 1", command)
@@ -1011,6 +1021,30 @@ func writeStandardOutput(stdout io.Writer, results []commandResult, quiet bool) 
 		first = false
 		fmt.Fprint(stdout, body)
 	}
+}
+
+func writePullOutput(stdout io.Writer, results []commandResult) {
+	first := true
+	for _, result := range results {
+		body := pullTargetOutput(result)
+		if body == "" {
+			continue
+		}
+
+		if !first {
+			fmt.Fprintln(stdout)
+		}
+		first = false
+		fmt.Fprint(stdout, body)
+	}
+}
+
+func pullTargetOutput(result commandResult) string {
+	if result.exitCode == 0 {
+		return fmt.Sprintf("[%s] pull complete\n", result.target.Label)
+	}
+
+	return targetOutput(result, false)
 }
 
 func targetOutput(result commandResult, quiet bool) string {
