@@ -26,8 +26,8 @@ func TestRunCLIWithRealDockerCompose(t *testing.T) {
 	mustWriteComposeFixture(t, apiCompose, "apisvc")
 
 	t.Cleanup(func() {
-		dockerComposeDown(t, filepath.Dir(apiCompose), apiCompose)
-		dockerComposeDown(t, filepath.Dir(rootCompose), rootCompose)
+		dockerComposeDown(t, filepath.Dir(apiCompose), apiCompose, composeDefaultProjectName(filepath.Dir(apiCompose)))
+		dockerComposeDown(t, filepath.Dir(rootCompose), rootCompose, composeDefaultProjectName(filepath.Dir(rootCompose)))
 	})
 
 	withWorkingDirectory(t, root, func() {
@@ -83,8 +83,8 @@ func TestRunCLIUsesDistinctProjectNamesForSameBasenameDirectories(t *testing.T) 
 	mustWriteComposeFixture(t, secondCompose, "svc")
 
 	t.Cleanup(func() {
-		dockerComposeDown(t, filepath.Dir(firstCompose), firstCompose)
-		dockerComposeDown(t, filepath.Dir(secondCompose), secondCompose)
+		dockerComposeDown(t, filepath.Dir(firstCompose), firstCompose, composeUniqueProjectName(filepath.Dir(firstCompose)))
+		dockerComposeDown(t, filepath.Dir(secondCompose), secondCompose, composeUniqueProjectName(filepath.Dir(secondCompose)))
 	})
 
 	withWorkingDirectory(t, root, func() {
@@ -160,10 +160,10 @@ func mustWriteComposeFixture(t *testing.T, path string, serviceName string) {
 	}
 }
 
-func dockerComposeDown(t *testing.T, dir string, composeFile string) {
+func dockerComposeDown(t *testing.T, dir string, composeFile string, projectName string) {
 	t.Helper()
 
-	cmd := exec.Command("docker", "compose", "--project-name", composeProjectName(dir), "-f", composeFile, "--project-directory", dir, "down", "--remove-orphans", "--volumes")
+	cmd := exec.Command("docker", "compose", "--project-name", projectName, "-f", composeFile, "--project-directory", dir, "down", "--remove-orphans", "--volumes")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Logf("cleanup failed for %s: %v\n%s", dir, err, string(output))

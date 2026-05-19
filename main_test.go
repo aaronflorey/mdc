@@ -35,6 +35,12 @@ func TestDiscoverTargetsFindsDepthOneComposeFiles(t *testing.T) {
 	if joined != ".,api" {
 		t.Fatalf("unexpected labels: %s", joined)
 	}
+
+	projectNames := []string{targets[0].ProjectName, targets[1].ProjectName}
+	wantProjectNames := []string{composeDefaultProjectName(root), "api"}
+	if strings.Join(projectNames, ",") != strings.Join(wantProjectNames, ",") {
+		t.Fatalf("unexpected project names: %v", projectNames)
+	}
 }
 
 func TestDiscoverTargetsUsesCanonicalComposeFile(t *testing.T) {
@@ -203,10 +209,10 @@ func TestOutputModeForArgsUsesCommandBehavior(t *testing.T) {
 	}
 }
 
-func TestComposeProjectNameIsStableAndUnique(t *testing.T) {
-	first := composeProjectName(filepath.Join(string(os.PathSeparator), "tmp", "services", "app"))
-	second := composeProjectName(filepath.Join(string(os.PathSeparator), "srv", "examples", "app"))
-	repeated := composeProjectName(filepath.Join(string(os.PathSeparator), "tmp", "services", "app"))
+func TestComposeUniqueProjectNameIsStableAndUnique(t *testing.T) {
+	first := composeUniqueProjectName(filepath.Join(string(os.PathSeparator), "tmp", "services", "app"))
+	second := composeUniqueProjectName(filepath.Join(string(os.PathSeparator), "srv", "examples", "app"))
+	repeated := composeUniqueProjectName(filepath.Join(string(os.PathSeparator), "tmp", "services", "app"))
 
 	if first != repeated {
 		t.Fatalf("expected stable project name, got %q and %q", first, repeated)
@@ -219,19 +225,50 @@ func TestComposeProjectNameIsStableAndUnique(t *testing.T) {
 	}
 }
 
+func TestComposeDefaultProjectNameUsesDirectoryBasename(t *testing.T) {
+	if got := composeDefaultProjectName(filepath.Join(string(os.PathSeparator), "tmp", "manual-demo")); got != "manual-demo" {
+		t.Fatalf("expected manual-demo, got %q", got)
+	}
+}
+
+func TestDiscoverTargetsDisambiguatesDuplicateProjectNames(t *testing.T) {
+	root := t.TempDir()
+	firstDir := filepath.Join(root, "services", "app")
+	secondDir := filepath.Join(root, "examples", "app")
+	mustWriteFile(t, filepath.Join(firstDir, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(secondDir, "compose.yaml"))
+
+	targets, err := discoverTargets(root, 2)
+	if err != nil {
+		t.Fatalf("discoverTargets returned error: %v", err)
+	}
+	if len(targets) != 2 {
+		t.Fatalf("expected 2 targets, got %d", len(targets))
+	}
+	if targets[0].ProjectName == targets[1].ProjectName {
+		t.Fatalf("expected distinct project names, got %q", targets[0].ProjectName)
+	}
+	if !strings.HasPrefix(targets[0].ProjectName, "mdc-app-") || !strings.HasPrefix(targets[1].ProjectName, "mdc-app-") {
+		t.Fatalf("expected hashed duplicate project names, got %q and %q", targets[0].ProjectName, targets[1].ProjectName)
+	}
+}
+
 func TestComposeCommandArgsIncludeProjectName(t *testing.T) {
 	dirOne := filepath.Join(string(os.PathSeparator), "tmp", "services", "app")
 	dirTwo := filepath.Join(string(os.PathSeparator), "srv", "examples", "app")
 
 	argsOne := composeCommandArgs(target{Dir: dirOne, File: filepath.Join(dirOne, "compose.yaml")}, []string{"up", "-d"})
-	argsTwo := composeCommandArgs(target{Dir: dirTwo, File: filepath.Join(dirTwo, "compose.yaml")}, []string{"up", "-d"})
+	argsTwo := composeCommandArgs(target{Dir: dirTwo, File: filepath.Join(dirTwo, "compose.yaml"), ProjectName: composeUniqueProjectName(dirTwo)}, []string{"up", "-d"})
 
 	projectOne := valueAfterFlag(argsOne, "--project-name")
 	projectTwo := valueAfterFlag(argsTwo, "--project-name")
 	if projectOne == "" || projectTwo == "" {
 		t.Fatalf("expected project names in args, got %v and %v", argsOne, argsTwo)
 	}
-	if projectOne == projectTwo {
+	if projectOne != "app" {
+		t.Fatalf("expected default project name app, got %q", projectOne)
+	}
+	if projectTwo == projectOne {
 		t.Fatalf("expected distinct project names, got %q", projectOne)
 	}
 	if got := strings.Join(argsOne[len(argsOne)-2:], " "); got != "up -d" {

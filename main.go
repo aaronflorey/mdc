@@ -51,6 +51,7 @@ type target struct {
 	Dir   string
 	File  string
 	Label string
+	ProjectName string
 }
 
 type commandResult struct {
@@ -259,6 +260,7 @@ func discoverTargets(root string, maxDepth int) ([]target, error) {
 	}
 
 	targets := make([]target, 0, len(dirs))
+	projectNameCounts := make(map[string]int)
 	for _, dir := range dirs {
 		file, ok, err := canonicalComposeFile(dir)
 		if err != nil {
@@ -278,7 +280,16 @@ func discoverTargets(root string, maxDepth int) ([]target, error) {
 			label = filepath.ToSlash(rel)
 		}
 
-		targets = append(targets, target{Dir: dir, File: file, Label: label})
+		projectName := composeDefaultProjectName(dir)
+		projectNameCounts[projectName]++
+
+		targets = append(targets, target{Dir: dir, File: file, Label: label, ProjectName: projectName})
+	}
+
+	for i := range targets {
+		if projectNameCounts[targets[i].ProjectName] > 1 {
+			targets[i].ProjectName = composeUniqueProjectName(targets[i].Dir)
+		}
 	}
 
 	sort.Slice(targets, func(i, j int) bool {
@@ -497,7 +508,7 @@ func (w *linePrefixWriter) Write(p []byte) (int, error) {
 func composeCommandArgs(stack target, args []string) []string {
 	commandArgs := []string{
 		"compose",
-		"--project-name", composeProjectName(stack.Dir),
+		"--project-name", targetProjectName(stack),
 		"-f", stack.File,
 		"--project-directory", stack.Dir,
 	}
@@ -505,16 +516,28 @@ func composeCommandArgs(stack target, args []string) []string {
 	return commandArgs
 }
 
-func composeProjectName(dir string) string {
+func targetProjectName(stack target) string {
+	if stack.ProjectName != "" {
+		return stack.ProjectName
+	}
+	return composeDefaultProjectName(stack.Dir)
+}
+
+func composeDefaultProjectName(dir string) string {
+	base := sanitizeComposeProjectComponent(filepath.Base(filepath.Clean(dir)))
+	if base == "" {
+		return "root"
+	}
+	return base
+}
+
+func composeUniqueProjectName(dir string) string {
 	cleanedDir := filepath.Clean(dir)
 	if absoluteDir, err := filepath.Abs(cleanedDir); err == nil {
 		cleanedDir = absoluteDir
 	}
 
-	base := sanitizeComposeProjectComponent(filepath.Base(cleanedDir))
-	if base == "" {
-		base = "root"
-	}
+	base := composeDefaultProjectName(cleanedDir)
 
 	hasher := fnv.New64a()
 	_, _ = hasher.Write([]byte(filepath.ToSlash(cleanedDir)))
