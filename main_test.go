@@ -186,6 +186,7 @@ func TestOutputModeForArgsUsesCommandBehavior(t *testing.T) {
 	}{
 		{name: "parallel up interleaves", args: []string{"up", "-d"}, jobs: 0, targets: 2, wantMode: outputModeInterleaved},
 		{name: "serial up passes through", args: []string{"up", "-d"}, jobs: 1, targets: 2, wantMode: outputModePassthrough},
+		{name: "pull stays buffered", args: []string{"pull"}, jobs: 0, targets: 2, wantMode: outputModeBuffered},
 		{name: "config stays buffered", args: []string{"config"}, jobs: 0, targets: 2, wantMode: outputModeBuffered},
 		{name: "parallel exec rejected", args: []string{"exec", "app", "sh"}, jobs: 0, targets: 2, wantError: "docker compose exec is interactive; rerun with --jobs 1"},
 	}
@@ -601,6 +602,96 @@ func TestRunCLIInterleavesLiveCommandOutput(t *testing.T) {
 	}
 	if !strings.Contains(output, "[api] started\n") {
 		t.Fatalf("expected api target output, got %q", output)
+	}
+}
+
+func TestRunCLISummarizesPullOutput(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(wd)
+	}()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
+		if strings.Join(args, " ") != "pull" {
+			t.Fatalf("unexpected args: %v", args)
+		}
+		if stdout != nil || stderr != nil {
+			t.Fatal("expected buffered pull output")
+		}
+		return commandResult{target: stack, stdout: "pull output that should be suppressed"}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"pull"}, runner)
+
+	if code != 0 {
+		t.Fatalf("expected success, got %d with stderr %q", code, stderr.String())
+	}
+	output := stdout.String()
+	if strings.Contains(output, "pull output that should be suppressed") {
+		t.Fatalf("expected pull chatter to be suppressed, got %q", output)
+	}
+	if !strings.Contains(output, "[.] pull complete\n") {
+		t.Fatalf("expected root pull summary, got %q", output)
+	}
+	if !strings.Contains(output, "[api] pull complete\n") {
+		t.Fatalf("expected api pull summary, got %q", output)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", stderr.String())
+	}
+}
+
+func TestRunCLIKeepsPullFailureDetails(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(wd)
+	}()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
+		if stack.Label == "api" {
+			return commandResult{target: stack, stderr: "denied", exitCode: 1, err: fmt.Errorf("denied")}
+		}
+		return commandResult{target: stack, stdout: "pull output that should be suppressed"}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"pull"}, runner)
+
+	if code != 1 {
+		t.Fatalf("expected failure exit code, got %d", code)
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "[.] pull complete\n") {
+		t.Fatalf("expected successful target summary, got %q", output)
+	}
+	if !strings.Contains(output, "[api]\ndenied\n") {
+		t.Fatalf("expected failed target details, got %q", output)
+	}
+	if !strings.Contains(stderr.String(), "1 target(s) failed: api (denied)") {
+		t.Fatalf("expected failure summary, got %q", stderr.String())
 	}
 }
 
