@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/aaronflorey/mdc/compare/v0.3.0...v0.3.1) (2026-05-19)
+
+
+### Bug Fixes
+
+* **cli:** reduce pull output noise ([c41a44d](https://github.com/aaronflorey/mdc/commit/c41a44d6bf58b1922ae0cc7bb6de9fa159a20ccc))
+
 ## [0.3.0](https://github.com/aaronflorey/mdc/compare/v0.2.1...v0.3.0) (2026-05-19)
 
 
