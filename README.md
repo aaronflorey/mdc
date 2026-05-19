@@ -59,7 +59,7 @@ task ci
   2. `compose.yml`
   3. `docker-compose.yaml`
   4. `docker-compose.yml`
-- `mdc` assigns an explicit Compose project name per target so duplicate directory basenames do not collide.
+- `mdc` preserves the target directory basename as the Compose project name when it is unique, and switches to a deterministic unique name only when duplicate basenames would collide.
 - Non-`ps` commands print grouped output per project in sorted directory order.
 - `mdc ps` tries `docker compose ps --format json`, merges results into one table, and falls back to stitched text when JSON is unavailable.
 - Exit code is non-zero if any compose target fails.
