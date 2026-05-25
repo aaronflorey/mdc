@@ -197,6 +197,7 @@ func TestOutputModeForArgsUsesCommandBehavior(t *testing.T) {
 		{name: "parallel build buffers", args: []string{"build"}, jobs: 0, targets: 2, wantMode: outputModeBuffered},
 		{name: "serial build passes through", args: []string{"build"}, jobs: 1, targets: 2, wantMode: outputModePassthrough},
 		{name: "single-target build passes through", args: []string{"build"}, jobs: 0, targets: 1, wantMode: outputModePassthrough},
+		{name: "parallel build with leading compose flags buffers", args: []string{"--ansi", "never", "build"}, jobs: 0, targets: 2, wantMode: outputModeBuffered},
 		{name: "pull stays buffered", args: []string{"pull"}, jobs: 0, targets: 2, wantMode: outputModeBuffered},
 		{name: "config stays buffered", args: []string{"config"}, jobs: 0, targets: 2, wantMode: outputModeBuffered},
 		{name: "parallel exec rejected", args: []string{"exec", "app", "sh"}, jobs: 0, targets: 2, wantError: "docker compose exec is interactive; rerun with --jobs 1"},
@@ -1335,6 +1336,9 @@ func TestRunCLIKeepsBuildFailureDetailsAndSummary(t *testing.T) {
 	if !strings.Contains(stdout.String(), "[api]\ndenied\n") {
 		t.Fatalf("expected failed target details, got %q", stdout.String())
 	}
+	if strings.Contains(stdout.String(), "[api] build complete\n") {
+		t.Fatalf("expected failed target to avoid success summary, got %q", stdout.String())
+	}
 	if !strings.Contains(stderr.String(), "1 target(s) failed: api (denied)") {
 		t.Fatalf("expected failure summary, got %q", stderr.String())
 	}
@@ -1368,6 +1372,12 @@ func TestRunCLIBuildFailureSummaryUsesStdoutAndExitFallback(t *testing.T) {
 		code := runCLI(context.Background(), &out, &errOut, []string{"build"}, runner)
 		if code != 2 {
 			t.Fatalf("expected exit 2, got %d", code)
+		}
+		if !strings.Contains(out.String(), "[api]\nfailed in stdout\n") {
+			t.Fatalf("expected stdout-only failed target details, got %q", out.String())
+		}
+		if strings.Contains(out.String(), "[api] build complete\n") {
+			t.Fatalf("expected failed target to avoid success summary, got %q", out.String())
 		}
 		if !strings.Contains(errOut.String(), "1 target(s) failed: api (failed in stdout)") {
 			t.Fatalf("expected stdout-based summary, got %q", errOut.String())
