@@ -161,6 +161,7 @@ func TestComposeCommandRecognizesTopLevelSubcommand(t *testing.T) {
 	}{
 		{name: "bare up", args: []string{"up", "-d"}, wantCmd: "up", wantIndex: 0},
 		{name: "leading flags", args: []string{"--ansi", "never", "logs", "-f"}, wantCmd: "logs", wantIndex: 2},
+		{name: "leading flags before events", args: []string{"--ansi", "never", "events"}, wantCmd: "events", wantIndex: 2},
 		{name: "equals flags", args: []string{"--project-directory=demo", "pull"}, wantCmd: "pull", wantIndex: 1},
 		{name: "unknown flag stops parse", args: []string{"--unknown", "value", "up"}, wantCmd: "", wantIndex: -1},
 	}
@@ -192,6 +193,9 @@ func TestOutputModeForArgsUsesCommandBehavior(t *testing.T) {
 		{name: "pull stays buffered", args: []string{"pull"}, jobs: 0, targets: 2, wantMode: outputModeBuffered},
 		{name: "config stays buffered", args: []string{"config"}, jobs: 0, targets: 2, wantMode: outputModeBuffered},
 		{name: "parallel exec rejected", args: []string{"exec", "app", "sh"}, jobs: 0, targets: 2, wantError: "docker compose exec is interactive; rerun with --jobs 1"},
+		{name: "parallel events rejected", args: []string{"events"}, jobs: 0, targets: 2, wantError: "docker compose events is live-streaming; rerun with --jobs 1"},
+		{name: "leading flags events rejected", args: []string{"--ansi", "never", "events"}, jobs: 0, targets: 2, wantError: "docker compose events is live-streaming; rerun with --jobs 1"},
+		{name: "serial events passthrough", args: []string{"events"}, jobs: 1, targets: 2, wantMode: outputModePassthrough},
 	}
 
 	for _, test := range tests {
@@ -937,6 +941,84 @@ func TestRunCLIKeepsPullFailureDetails(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "1 target(s) failed: api (denied)") {
 		t.Fatalf("expected failure summary, got %q", stderr.String())
+	}
+}
+
+func TestRunCLIRejectsParallelEventsCommands(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(wd)
+	}()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
+		t.Fatal("runner should not be invoked for invalid parallel events command")
+		return commandResult{}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"events"}, runner)
+
+	if code != 2 {
+		t.Fatalf("expected usage error, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "docker compose events is live-streaming; rerun with --jobs 1") {
+		t.Fatalf("expected live-streaming command error, got %q", stderr.String())
+	}
+}
+
+func TestRunCLIAllowsSerialEventsPassthrough(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(wd)
+	}()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
+		if strings.Join(args, " ") != "events" {
+			t.Fatalf("unexpected args: %v", args)
+		}
+		if stdout == nil || stderr == nil {
+			t.Fatal("expected passthrough writers for serial events")
+		}
+		if _, err := io.WriteString(stdout, "event output\n"); err != nil {
+			t.Fatalf("write stdout: %v", err)
+		}
+		return commandResult{target: stack, streamed: true}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"--jobs", "1", "events"}, runner)
+
+	if code != 0 {
+		t.Fatalf("expected success, got %d with stderr %q", code, stderr.String())
+	}
+	output := stdout.String()
+	if strings.Count(output, "event output") != 2 {
+		t.Fatalf("expected passthrough output from both targets, got %q", output)
+	}
+	if strings.Contains(output, "[.] event output") || strings.Contains(output, "[api] event output") {
+		t.Fatalf("expected passthrough output without interleaving prefixes, got %q", output)
 	}
 }
 

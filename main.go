@@ -638,6 +638,13 @@ func outputModeForArgs(args []string, jobs int, targetCount int) (outputMode, er
 		return outputModePassthrough, nil
 	}
 
+	if command == "events" {
+		if parallel {
+			return outputModeBuffered, fmt.Errorf("docker compose events is live-streaming; rerun with --jobs 1")
+		}
+		return outputModePassthrough, nil
+	}
+
 	if isInterleavedComposeCommand(command) {
 		if parallel {
 			return outputModeInterleaved, nil
@@ -666,7 +673,7 @@ func isInteractiveComposeCommand(command string) bool {
 
 func isInterleavedComposeCommand(command string) bool {
 	switch command {
-	case "create", "down", "events", "logs", "pull", "restart", "start", "stop", "up":
+	case "create", "down", "logs", "pull", "restart", "start", "stop", "up":
 		return true
 	default:
 		return false
