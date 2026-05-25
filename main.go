@@ -48,9 +48,9 @@ type options struct {
 }
 
 type target struct {
-	Dir   string
-	File  string
-	Label string
+	Dir         string
+	File        string
+	Label       string
 	ProjectName string
 }
 
@@ -135,8 +135,8 @@ func runCLI(ctx context.Context, stdout io.Writer, stderr io.Writer, argv []stri
 	}
 
 	results := executeTargets(ctx, targets, composeArgs, opts.jobs, runner, outputWriters(mode, stdout, stderr))
-	if command == "pull" {
-		writePullOutput(stdout, results)
+	if mode == outputModeBuffered {
+		writeBufferedOutput(stdout, command, results)
 	} else {
 		writeStandardOutput(stdout, results, opts.quietTargets)
 	}
@@ -624,6 +624,13 @@ func outputModeForArgs(args []string, jobs int, targetCount int) (outputMode, er
 		return outputModeBuffered, nil
 	}
 
+	if command == "build" {
+		if parallel {
+			return outputModeBuffered, nil
+		}
+		return outputModePassthrough, nil
+	}
+
 	if isInteractiveComposeCommand(command) {
 		if parallel {
 			return outputModeBuffered, fmt.Errorf("docker compose %s is interactive; rerun with --jobs 1", command)
@@ -659,7 +666,7 @@ func isInteractiveComposeCommand(command string) bool {
 
 func isInterleavedComposeCommand(command string) bool {
 	switch command {
-	case "build", "create", "down", "events", "logs", "pull", "restart", "start", "stop", "up":
+	case "create", "down", "events", "logs", "pull", "restart", "start", "stop", "up":
 		return true
 	default:
 		return false
@@ -1023,10 +1030,10 @@ func writeStandardOutput(stdout io.Writer, results []commandResult, quiet bool) 
 	}
 }
 
-func writePullOutput(stdout io.Writer, results []commandResult) {
+func writeBufferedOutput(stdout io.Writer, command string, results []commandResult) {
 	first := true
 	for _, result := range results {
-		body := pullTargetOutput(result)
+		body := bufferedTargetOutput(command, result)
 		if body == "" {
 			continue
 		}
@@ -1039,9 +1046,14 @@ func writePullOutput(stdout io.Writer, results []commandResult) {
 	}
 }
 
-func pullTargetOutput(result commandResult) string {
+func bufferedTargetOutput(command string, result commandResult) string {
 	if result.exitCode == 0 {
-		return fmt.Sprintf("[%s] pull complete\n", result.target.Label)
+		switch command {
+		case "pull":
+			return fmt.Sprintf("[%s] pull complete\n", result.target.Label)
+		case "build":
+			return fmt.Sprintf("[%s] build complete\n", result.target.Label)
+		}
 	}
 
 	return targetOutput(result, false)

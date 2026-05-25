@@ -186,6 +186,9 @@ func TestOutputModeForArgsUsesCommandBehavior(t *testing.T) {
 	}{
 		{name: "parallel up interleaves", args: []string{"up", "-d"}, jobs: 0, targets: 2, wantMode: outputModeInterleaved},
 		{name: "serial up passes through", args: []string{"up", "-d"}, jobs: 1, targets: 2, wantMode: outputModePassthrough},
+		{name: "parallel build buffers", args: []string{"build"}, jobs: 0, targets: 2, wantMode: outputModeBuffered},
+		{name: "serial build passes through", args: []string{"build"}, jobs: 1, targets: 2, wantMode: outputModePassthrough},
+		{name: "single-target build passes through", args: []string{"build"}, jobs: 0, targets: 1, wantMode: outputModePassthrough},
 		{name: "pull stays buffered", args: []string{"pull"}, jobs: 0, targets: 2, wantMode: outputModeBuffered},
 		{name: "config stays buffered", args: []string{"config"}, jobs: 0, targets: 2, wantMode: outputModeBuffered},
 		{name: "parallel exec rejected", args: []string{"exec", "app", "sh"}, jobs: 0, targets: 2, wantError: "docker compose exec is interactive; rerun with --jobs 1"},
@@ -605,6 +608,70 @@ func TestRunCLIInterleavesLiveCommandOutput(t *testing.T) {
 	}
 }
 
+func TestRunCLIBuffersOnlyParallelBuildOutput(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(wd)
+	}()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	tests := []struct {
+		name         string
+		argv         []string
+		wantBuffered bool
+	}{
+		{name: "parallel build", argv: []string{"build"}, wantBuffered: true},
+		{name: "bounded parallel build", argv: []string{"--jobs", "2", "build"}, wantBuffered: true},
+		{name: "serial build", argv: []string{"--jobs", "1", "build"}, wantBuffered: false},
+		{name: "single target build", argv: []string{"--depth", "0", "build"}, wantBuffered: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
+				if strings.Join(args, " ") != "build" {
+					t.Fatalf("unexpected args: %v", args)
+				}
+				isBuffered := stdout == nil && stderr == nil
+				if isBuffered != test.wantBuffered {
+					t.Fatalf("expected buffered=%t, got stdout=%T stderr=%T", test.wantBuffered, stdout, stderr)
+				}
+				if stdout != nil {
+					if _, err := io.WriteString(stdout, "build output\n"); err != nil {
+						t.Fatalf("write stdout: %v", err)
+					}
+				}
+				return commandResult{target: stack, stdout: "build output"}
+			}
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := runCLI(context.Background(), &stdout, &stderr, test.argv, runner)
+			if code != 0 {
+				t.Fatalf("expected success, got %d with stderr %q", code, stderr.String())
+			}
+			if test.wantBuffered {
+				return
+			}
+			if !strings.Contains(stdout.String(), "build output") {
+				t.Fatalf("expected passthrough/interleaved output, got %q", stdout.String())
+			}
+			if strings.Contains(stdout.String(), "build complete") {
+				t.Fatalf("expected non-buffered build output unchanged, got %q", stdout.String())
+			}
+		})
+	}
+}
+
 func TestRunCLISummarizesPullOutput(t *testing.T) {
 	root := t.TempDir()
 	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
@@ -651,6 +718,184 @@ func TestRunCLISummarizesPullOutput(t *testing.T) {
 	if stderr.Len() != 0 {
 		t.Fatalf("expected empty stderr, got %q", stderr.String())
 	}
+}
+
+func TestRunCLISuppressesSuccessfulParallelBuildOutput(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(wd)
+	}()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
+		if strings.Join(args, " ") != "build" {
+			t.Fatalf("unexpected args: %v", args)
+		}
+		if stdout != nil || stderr != nil {
+			t.Fatal("expected buffered build output")
+		}
+		return commandResult{target: stack, stdout: "noisy buildkit output"}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"build"}, runner)
+	if code != 0 {
+		t.Fatalf("expected success, got %d with stderr %q", code, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "noisy buildkit output") {
+		t.Fatalf("expected build chatter to be suppressed, got %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "[.] build complete\n") || !strings.Contains(stdout.String(), "[api] build complete\n") {
+		t.Fatalf("expected per-target build summaries, got %q", stdout.String())
+	}
+}
+
+func TestRunCLIUsesBuildBufferedPathWithLeadingComposeFlags(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(wd)
+	}()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
+		if strings.Join(args, " ") != "--ansi never build" {
+			t.Fatalf("unexpected args: %v", args)
+		}
+		if stdout != nil || stderr != nil {
+			t.Fatal("expected buffered build output")
+		}
+		return commandResult{target: stack, stdout: "suppressed buildkit output"}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"--ansi", "never", "build"}, runner)
+	if code != 0 {
+		t.Fatalf("expected success, got %d with stderr %q", code, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "suppressed buildkit output") {
+		t.Fatalf("expected build chatter to be suppressed, got %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "[.] build complete\n") || !strings.Contains(stdout.String(), "[api] build complete\n") {
+		t.Fatalf("expected per-target build summaries, got %q", stdout.String())
+	}
+}
+
+func TestRunCLIKeepsBuildFailureDetailsAndSummary(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(wd)
+	}()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
+		switch stack.Label {
+		case "api":
+			return commandResult{target: stack, stderr: "denied", exitCode: 1, err: fmt.Errorf("denied")}
+		default:
+			return commandResult{target: stack, stdout: "suppressed success output"}
+		}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"build"}, runner)
+	if code != 1 {
+		t.Fatalf("expected failure exit code, got %d", code)
+	}
+	if !strings.Contains(stdout.String(), "[.] build complete\n") {
+		t.Fatalf("expected successful target summary, got %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "[api]\ndenied\n") {
+		t.Fatalf("expected failed target details, got %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "1 target(s) failed: api (denied)") {
+		t.Fatalf("expected failure summary, got %q", stderr.String())
+	}
+}
+
+func TestRunCLIBuildFailureSummaryUsesStdoutAndExitFallback(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(wd)
+	}()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	t.Run("stdout detail", func(t *testing.T) {
+		runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
+			if stack.Label == "api" {
+				return commandResult{target: stack, stdout: "failed in stdout", exitCode: 2, err: fmt.Errorf("failed")}
+			}
+			return commandResult{target: stack, stdout: "ok"}
+		}
+		var out bytes.Buffer
+		var errOut bytes.Buffer
+		code := runCLI(context.Background(), &out, &errOut, []string{"build"}, runner)
+		if code != 2 {
+			t.Fatalf("expected exit 2, got %d", code)
+		}
+		if !strings.Contains(errOut.String(), "1 target(s) failed: api (failed in stdout)") {
+			t.Fatalf("expected stdout-based summary, got %q", errOut.String())
+		}
+	})
+
+	t.Run("exit fallback", func(t *testing.T) {
+		runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
+			if stack.Label == "api" {
+				return commandResult{target: stack, exitCode: 7, err: fmt.Errorf("failed")}
+			}
+			return commandResult{target: stack, stdout: "ok"}
+		}
+		var out bytes.Buffer
+		var errOut bytes.Buffer
+		code := runCLI(context.Background(), &out, &errOut, []string{"build"}, runner)
+		if code != 7 {
+			t.Fatalf("expected exit 7, got %d", code)
+		}
+		if !strings.Contains(out.String(), "[api]\ncommand failed with exit code 7\n") {
+			t.Fatalf("expected exit-code fallback in target output, got %q", out.String())
+		}
+		if !strings.Contains(errOut.String(), "1 target(s) failed: api (exit 7)") {
+			t.Fatalf("expected exit-code summary, got %q", errOut.String())
+		}
+	})
 }
 
 func TestRunCLIKeepsPullFailureDetails(t *testing.T) {
