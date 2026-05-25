@@ -125,6 +125,9 @@ func runCLI(ctx context.Context, stdout io.Writer, stderr io.Writer, argv []stri
 	if shouldMergePS(composeArgs) {
 		return runPS(ctx, stdout, stderr, targets, opts, composeArgs, runner)
 	}
+	if shouldMergeImages(composeArgs) && len(targets) > 1 {
+		return runImages(ctx, stdout, stderr, targets, opts, composeArgs, runner)
+	}
 
 	command, _ := composeCommand(composeArgs)
 
@@ -694,6 +697,11 @@ func shouldMergePS(args []string) bool {
 	return strings.EqualFold(format, "json")
 }
 
+func shouldMergeImages(args []string) bool {
+	command, _ := composeCommand(args)
+	return command == "images"
+}
+
 func psCommandIndex(args []string) int {
 	command, index := composeCommand(args)
 	if command == "ps" {
@@ -792,6 +800,23 @@ func runPS(ctx context.Context, stdout io.Writer, stderr io.Writer, targets []ta
 		return failures[0].exitCode
 	}
 
+	return 0
+}
+
+func runImages(ctx context.Context, stdout io.Writer, stderr io.Writer, targets []target, opts options, composeArgs []string, runner composeRunner) int {
+	results := executeTargets(ctx, targets, composeArgs, opts.jobs, runner, outputWriters(outputModeBuffered, nil, nil))
+	if failures := failureResults(results); len(failures) > 0 {
+		writeStandardOutput(stdout, results, false)
+		writeFailureSummary(stderr, failures)
+		return failures[0].exitCode
+	}
+
+	if merged, ok := mergeImagesTables(results); ok {
+		fmt.Fprint(stdout, merged)
+		return 0
+	}
+
+	fmt.Fprint(stdout, mergeImagesText(results))
 	return 0
 }
 
@@ -1018,6 +1043,214 @@ func mergePSText(results []commandResult) string {
 		return ""
 	}
 
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func mergeImagesTables(results []commandResult) (string, bool) {
+	type table struct {
+		header []string
+		rows   [][]string
+	}
+
+	var tables []table
+	for _, result := range results {
+		t, ok := parseImagesTable(result.stdout)
+		if !ok {
+			return "", false
+		}
+		tables = append(tables, t)
+	}
+	if len(tables) == 0 {
+		return "", false
+	}
+
+	header := tables[0].header
+	for _, t := range tables[1:] {
+		if strings.Join(t.header, "\x00") != strings.Join(header, "\x00") {
+			return "", false
+		}
+	}
+
+	allRows := make([][]string, 0)
+	for _, t := range tables {
+		allRows = append(allRows, t.rows...)
+	}
+
+	return renderTable(header, allRows), true
+}
+
+func parseImagesTable(raw string) (struct {
+	header []string
+	rows   [][]string
+}, bool) {
+	var empty struct {
+		header []string
+		rows   [][]string
+	}
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return empty, false
+	}
+	lines := strings.Split(trimmed, "\n")
+	if len(lines) == 0 {
+		return empty, false
+	}
+
+	header := strings.TrimRight(lines[0], "\r")
+	starts, columns := parseHeaderColumns(header)
+	if len(columns) < 2 {
+		return empty, false
+	}
+
+	rows := make([][]string, 0, len(lines)-1)
+	for _, line := range lines[1:] {
+		line = strings.TrimRight(line, "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		row, ok := extractColumns(line, starts)
+		if !ok || len(row) != len(columns) {
+			return empty, false
+		}
+		rows = append(rows, row)
+	}
+
+	return struct {
+		header []string
+		rows   [][]string
+	}{header: columns, rows: rows}, true
+}
+
+func parseHeaderColumns(line string) ([]int, []string) {
+	starts := []int{0}
+	cols := make([]string, 0)
+	start := 0
+	i := 0
+	hasDelimiter := false
+	for i < len(line) {
+		if line[i] != ' ' {
+			i++
+			continue
+		}
+		j := i
+		for j < len(line) && line[j] == ' ' {
+			j++
+		}
+		if j-i >= 2 {
+			hasDelimiter = true
+			cols = append(cols, strings.TrimSpace(line[start:i]))
+			for j < len(line) && line[j] == ' ' {
+				j++
+			}
+			if j < len(line) {
+				starts = append(starts, j)
+			}
+			start = j
+			i = j
+			continue
+		}
+		i = j
+	}
+	if start < len(line) {
+		cols = append(cols, strings.TrimSpace(line[start:]))
+	}
+	if !hasDelimiter {
+		return nil, nil
+	}
+	return starts, cols
+}
+
+func extractColumns(line string, starts []int) ([]string, bool) {
+	if len(starts) == 0 {
+		return nil, false
+	}
+	raw := []rune(line)
+	row := make([]string, 0, len(starts))
+	for i := range starts {
+		start := starts[i]
+		if start >= len(raw) {
+			if i == 0 {
+				return nil, false
+			}
+			row = append(row, "")
+			continue
+		}
+		end := len(raw)
+		if i+1 < len(starts) {
+			end = starts[i+1]
+			if end > len(raw) {
+				end = len(raw)
+			}
+		}
+		row = append(row, strings.TrimSpace(string(raw[start:end])))
+	}
+	return row, true
+}
+
+func renderTable(header []string, rows [][]string) string {
+	widths := make([]int, len(header))
+	for i, col := range header {
+		widths[i] = len(col)
+	}
+	for _, row := range rows {
+		for i, col := range row {
+			if i < len(widths) && len(col) > widths[i] {
+				widths[i] = len(col)
+			}
+		}
+	}
+
+	var out strings.Builder
+	for i, col := range header {
+		if i > 0 {
+			out.WriteString("  ")
+		}
+		fmt.Fprintf(&out, "%-*s", widths[i], col)
+	}
+	out.WriteByte('\n')
+	for _, row := range rows {
+		for i := range header {
+			if i > 0 {
+				out.WriteString("  ")
+			}
+			value := ""
+			if i < len(row) {
+				value = row[i]
+			}
+			fmt.Fprintf(&out, "%-*s", widths[i], value)
+		}
+		out.WriteByte('\n')
+	}
+	return out.String()
+}
+
+func mergeImagesText(results []commandResult) string {
+	var lines []string
+	var header string
+	for _, result := range results {
+		trimmed := strings.TrimSpace(result.stdout)
+		if trimmed == "" {
+			continue
+		}
+		resultLines := strings.Split(trimmed, "\n")
+		for i, line := range resultLines {
+			line = strings.TrimRight(line, "\r")
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			if i == 0 {
+				if header == "" {
+					header = line
+					lines = append(lines, line)
+				}
+				continue
+			}
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
 	return strings.Join(lines, "\n") + "\n"
 }
 

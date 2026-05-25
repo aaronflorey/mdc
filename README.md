@@ -64,6 +64,7 @@ task ci
 - Top-level multi-target `mdc build` (parallel mode) suppresses noisy successful BuildKit logs and prints concise `[target] build complete` summaries; failed targets still print detailed stdout/stderr plus the standard failure summary.
 - Top-level `mdc events` is serial-only for multi-target runs; if multiple targets are discovered, rerun with `--jobs 1`.
 - `mdc ps` tries `docker compose ps --format json`, merges results into one table, and falls back to stitched text when JSON is unavailable.
+- Top-level multi-target `mdc images` emits one merged table when all targets share a conservatively parseable table shape; otherwise it falls back to a deterministic stitched view that keeps one header and preserves all rows in sorted target order.
 - Exit code is non-zero if any compose target fails.
 - Ctrl-C cancels the shared run context so in-flight `docker compose` processes stop together.
 - `mdc` only parses its own flags (`--depth`, `--jobs`, `--quiet-targets`) and passes everything else through to `docker compose`.

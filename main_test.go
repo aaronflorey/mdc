@@ -531,6 +531,195 @@ func TestRunCLIFallsBackToTextPSWhenJSONFails(t *testing.T) {
 	}
 }
 
+func TestRunCLIMergesImagesOutput(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() { _ = os.Chdir(wd) }()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	runner := func(_ context.Context, stack target, args []string, _ io.Writer, _ io.Writer) commandResult {
+		if strings.Join(args, " ") != "images" {
+			t.Fatalf("unexpected args: %v", args)
+		}
+		if stack.Label == "." {
+			return commandResult{target: stack, stdout: "CONTAINER  IMAGE               COMMAND  CREATED      STATUS  PORTS\nroot-web   nginx:latest        sh       2 hours ago  Up 2h   80/tcp\n"}
+		}
+		return commandResult{target: stack, stdout: "CONTAINER  IMAGE               COMMAND  CREATED      STATUS  PORTS\napi-web    ghcr.io/acme/api:v1 sh       Just now     Up 1s   8080/tcp\n"}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"images"}, runner)
+	if code != 0 {
+		t.Fatalf("expected success, got %d with stderr %q", code, stderr.String())
+	}
+	out := stdout.String()
+	if strings.Count(out, "CONTAINER") != 1 {
+		t.Fatalf("expected single header, got %q", out)
+	}
+	if !strings.Contains(out, "root-web") || !strings.Contains(out, "api-web") {
+		t.Fatalf("expected merged rows, got %q", out)
+	}
+}
+
+func TestRunCLIFallsBackToDeterministicImagesOutput(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "zed", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() { _ = os.Chdir(wd) }()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	runner := func(_ context.Context, stack target, args []string, _ io.Writer, _ io.Writer) commandResult {
+		if strings.Join(args, " ") != "images" {
+			t.Fatalf("unexpected args: %v", args)
+		}
+		switch stack.Label {
+		case ".":
+			return commandResult{target: stack, stdout: "CONTAINER IMAGE\nshared nginx\n"}
+		case "api":
+			return commandResult{target: stack, stdout: "CONTAINER  IMAGE\nshared nginx\n"}
+		default:
+			return commandResult{target: stack, stdout: "CONTAINER  IMAGE\nzed-web ghcr.io/acme/api:v1\n"}
+		}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"images"}, runner)
+	if code != 0 {
+		t.Fatalf("expected success, got %d with stderr %q", code, stderr.String())
+	}
+	out := stdout.String()
+	if strings.Count(out, "CONTAINER") != 1 {
+		t.Fatalf("expected single retained header, got %q", out)
+	}
+	if strings.Count(out, "shared nginx") != 2 {
+		t.Fatalf("expected conservative duplicate-row retention, got %q", out)
+	}
+	if !strings.Contains(out, "zed-web ghcr.io/acme/api:v1") {
+		t.Fatalf("expected zed row in fallback output, got %q", out)
+	}
+	firstShared := strings.Index(out, "shared nginx")
+	zedRow := strings.Index(out, "zed-web ghcr.io/acme/api:v1")
+	if firstShared == -1 || zedRow == -1 || firstShared > zedRow {
+		t.Fatalf("expected deterministic sorted fallback order, got %q", out)
+	}
+}
+
+func TestRunCLIMergesImagesOutputWithLeadingComposeFlags(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() { _ = os.Chdir(wd) }()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	runner := func(_ context.Context, stack target, args []string, _ io.Writer, _ io.Writer) commandResult {
+		if strings.Join(args, " ") != "--ansi never images" {
+			t.Fatalf("unexpected args: %v", args)
+		}
+		return commandResult{target: stack, stdout: "CONTAINER  IMAGE\n" + stack.Label + "-web nginx\n"}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"--ansi", "never", "images"}, runner)
+	if code != 0 {
+		t.Fatalf("expected success, got %d with stderr %q", code, stderr.String())
+	}
+	out := stdout.String()
+	if strings.Count(out, "CONTAINER") != 1 || !strings.Contains(out, ".-web") || !strings.Contains(out, "api-web") {
+		t.Fatalf("expected merged top-level images output with leading flags, got %q", out)
+	}
+}
+
+func TestRunCLIKeepsImagesFailureDetails(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() { _ = os.Chdir(wd) }()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	runner := func(_ context.Context, stack target, args []string, _ io.Writer, _ io.Writer) commandResult {
+		if stack.Label == "api" {
+			return commandResult{target: stack, stderr: "permission denied", exitCode: 4, err: fmt.Errorf("permission denied")}
+		}
+		return commandResult{target: stack, stdout: "CONTAINER IMAGE\nroot-web nginx\n"}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"images"}, runner)
+	if code != 4 {
+		t.Fatalf("expected failure code 4, got %d", code)
+	}
+	if !strings.Contains(stdout.String(), "[api]\npermission denied") {
+		t.Fatalf("expected failed target details, got %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "1 target(s) failed: api (permission denied)") {
+		t.Fatalf("expected failure summary, got %q", stderr.String())
+	}
+}
+
+func TestRunCLIPassesThroughNestedImagesArguments(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() { _ = os.Chdir(wd) }()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	var received []string
+	runner := func(_ context.Context, stack target, args []string, _ io.Writer, _ io.Writer) commandResult {
+		received = append([]string(nil), args...)
+		return commandResult{target: stack, stdout: "ok"}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"exec", "app", "images"}, runner)
+	if code != 0 {
+		t.Fatalf("expected success, got %d with stderr %q", code, stderr.String())
+	}
+	if strings.Join(received, " ") != "exec app images" {
+		t.Fatalf("expected passthrough args, got %v", received)
+	}
+}
+
 func TestRunCLIPassesThroughNestedPSArguments(t *testing.T) {
 	root := t.TempDir()
 	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
