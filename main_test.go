@@ -187,6 +187,13 @@ func TestOutputModeForArgsUsesCommandBehavior(t *testing.T) {
 	}{
 		{name: "parallel up interleaves", args: []string{"up", "-d"}, jobs: 0, targets: 2, wantMode: outputModeInterleaved},
 		{name: "serial up passes through", args: []string{"up", "-d"}, jobs: 1, targets: 2, wantMode: outputModePassthrough},
+		{name: "parallel logs buffers without follow", args: []string{"logs", "--tail", "50"}, jobs: 0, targets: 2, wantMode: outputModeBuffered},
+		{name: "parallel logs follow short flag interleaves", args: []string{"logs", "-f"}, jobs: 0, targets: 2, wantMode: outputModeInterleaved},
+		{name: "parallel logs follow long flag interleaves", args: []string{"logs", "--follow"}, jobs: 0, targets: 2, wantMode: outputModeInterleaved},
+		{name: "parallel logs with leading compose file buffers", args: []string{"-f", "compose.prod.yml", "logs", "--tail", "20"}, jobs: 0, targets: 2, wantMode: outputModeBuffered},
+		{name: "parallel logs follow with leading compose file interleaves", args: []string{"-f", "compose.prod.yml", "logs", "-f"}, jobs: 0, targets: 2, wantMode: outputModeInterleaved},
+		{name: "serial logs passes through", args: []string{"logs", "--tail", "20"}, jobs: 1, targets: 2, wantMode: outputModePassthrough},
+		{name: "single-target logs passes through", args: []string{"logs", "--tail", "20"}, jobs: 0, targets: 1, wantMode: outputModePassthrough},
 		{name: "parallel build buffers", args: []string{"build"}, jobs: 0, targets: 2, wantMode: outputModeBuffered},
 		{name: "serial build passes through", args: []string{"build"}, jobs: 1, targets: 2, wantMode: outputModePassthrough},
 		{name: "single-target build passes through", args: []string{"build"}, jobs: 0, targets: 1, wantMode: outputModePassthrough},
@@ -798,6 +805,304 @@ func TestRunCLIInterleavesLiveCommandOutput(t *testing.T) {
 	}
 	if !strings.Contains(output, "[api] started\n") {
 		t.Fatalf("expected api target output, got %q", output)
+	}
+}
+
+func TestRunCLIBuffersTopLevelParallelLogsWithoutFollow(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(wd)
+	}()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	var runnerErr error
+	var runnerErrMu sync.Mutex
+	recordRunnerErr := func(err error) {
+		runnerErrMu.Lock()
+		defer runnerErrMu.Unlock()
+		if runnerErr == nil {
+			runnerErr = err
+		}
+	}
+
+	runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
+		if strings.Join(args, " ") != "logs --tail 50" {
+			recordRunnerErr(fmt.Errorf("unexpected args: %v", args))
+		}
+		if stdout != nil || stderr != nil {
+			recordRunnerErr(fmt.Errorf("expected buffered logs output for non-follow mode"))
+		}
+		return commandResult{target: stack, stdout: "history line"}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"logs", "--tail", "50"}, runner)
+	if runnerErr != nil {
+		t.Fatalf("runner assertion failed: %v", runnerErr)
+	}
+	if code != 0 {
+		t.Fatalf("expected success, got %d with stderr %q", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "[.]\nhistory line\n") || !strings.Contains(output, "[api]\nhistory line\n") {
+		t.Fatalf("expected grouped buffered logs output, got %q", output)
+	}
+}
+
+func TestRunCLIKeepsLogsFailureDetailsInBufferedMode(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(wd)
+	}()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	var runnerErr error
+	var runnerErrMu sync.Mutex
+	recordRunnerErr := func(err error) {
+		runnerErrMu.Lock()
+		defer runnerErrMu.Unlock()
+		if runnerErr == nil {
+			runnerErr = err
+		}
+	}
+
+	runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
+		if strings.Join(args, " ") != "logs --tail 50" {
+			recordRunnerErr(fmt.Errorf("unexpected args: %v", args))
+		}
+		if stack.Label == "api" {
+			return commandResult{target: stack, stderr: "log stream denied", exitCode: 4, err: fmt.Errorf("log stream denied")}
+		}
+		return commandResult{target: stack, stdout: "history line"}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"logs", "--tail", "50"}, runner)
+	if runnerErr != nil {
+		t.Fatalf("runner assertion failed: %v", runnerErr)
+	}
+	if code != 4 {
+		t.Fatalf("expected failure exit code, got %d", code)
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "[.]\nhistory line\n") {
+		t.Fatalf("expected successful target grouped output, got %q", output)
+	}
+	if !strings.Contains(output, "[api]\nlog stream denied\n") {
+		t.Fatalf("expected failed target stderr output, got %q", output)
+	}
+	if !strings.Contains(stderr.String(), "1 target(s) failed: api (log stream denied)") {
+		t.Fatalf("expected logs failure summary, got %q", stderr.String())
+	}
+}
+
+func TestRunCLIInterleavesTopLevelParallelLogsFollowWithComposeFlags(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(wd)
+	}()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	var runnerErr error
+	var runnerErrMu sync.Mutex
+	recordRunnerErr := func(err error) {
+		runnerErrMu.Lock()
+		defer runnerErrMu.Unlock()
+		if runnerErr == nil {
+			runnerErr = err
+		}
+	}
+
+	runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
+		if strings.Join(args, " ") != "--ansi never logs --follow" {
+			recordRunnerErr(fmt.Errorf("unexpected args: %v", args))
+		}
+		if stdout == nil || stderr == nil {
+			recordRunnerErr(fmt.Errorf("expected live writers for logs follow mode"))
+		}
+		if _, err := io.WriteString(stdout, "tail line\n"); err != nil {
+			recordRunnerErr(fmt.Errorf("write stdout: %w", err))
+		}
+		if _, err := io.WriteString(stderr, "warn line\n"); err != nil {
+			recordRunnerErr(fmt.Errorf("write stderr: %w", err))
+		}
+		return commandResult{target: stack, streamed: true}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"--ansi", "never", "logs", "--follow"}, runner)
+	if runnerErr != nil {
+		t.Fatalf("runner assertion failed: %v", runnerErr)
+	}
+	if code != 0 {
+		t.Fatalf("expected success, got %d with stderr %q", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "[.] tail line\n") || !strings.Contains(output, "[api] tail line\n") {
+		t.Fatalf("expected interleaved follow stdout output with per-target prefixes, got %q", output)
+	}
+	errOutput := stderr.String()
+	if !strings.Contains(errOutput, "[.] warn line\n") || !strings.Contains(errOutput, "[api] warn line\n") {
+		t.Fatalf("expected interleaved follow stderr output with per-target prefixes, got %q", errOutput)
+	}
+}
+
+func TestRunCLILogsFollowFailureKeepsStreamingAndSummary(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(wd)
+	}()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	var runnerErr error
+	var runnerErrMu sync.Mutex
+	recordRunnerErr := func(err error) {
+		runnerErrMu.Lock()
+		defer runnerErrMu.Unlock()
+		if runnerErr == nil {
+			runnerErr = err
+		}
+	}
+
+	runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
+		if strings.Join(args, " ") != "logs --follow" {
+			recordRunnerErr(fmt.Errorf("unexpected args: %v", args))
+		}
+		if _, err := io.WriteString(stdout, "live line\n"); err != nil {
+			recordRunnerErr(fmt.Errorf("write stdout: %w", err))
+		}
+		if stack.Label == "api" {
+			return commandResult{target: stack, exitCode: 6, streamed: true, err: fmt.Errorf("follow failed")}
+		}
+		return commandResult{target: stack, streamed: true}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"logs", "--follow"}, runner)
+	if runnerErr != nil {
+		t.Fatalf("runner assertion failed: %v", runnerErr)
+	}
+	if code != 6 {
+		t.Fatalf("expected failure exit code, got %d", code)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "[.] live line\n") || !strings.Contains(out, "[api] live line\n") {
+		t.Fatalf("expected live prefixed follow output, got %q", out)
+	}
+	if !strings.Contains(stderr.String(), "1 target(s) failed: api (exit 6)") {
+		t.Fatalf("expected follow failure summary, got %q", stderr.String())
+	}
+}
+
+func TestRunCLIPreservesLogsPassthroughForSerialAndSingleTarget(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(wd)
+	}()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		argv []string
+	}{
+		{name: "serial logs", argv: []string{"--jobs", "1", "logs", "--tail", "5"}},
+		{name: "single target logs", argv: []string{"--depth", "0", "logs", "--tail", "5"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var runnerErr error
+			var runnerErrMu sync.Mutex
+			recordRunnerErr := func(err error) {
+				runnerErrMu.Lock()
+				defer runnerErrMu.Unlock()
+				if runnerErr == nil {
+					runnerErr = err
+				}
+			}
+
+			runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
+				if strings.Join(args, " ") != "logs --tail 5" {
+					recordRunnerErr(fmt.Errorf("unexpected args: %v", args))
+				}
+				if stdout == nil || stderr == nil {
+					recordRunnerErr(fmt.Errorf("expected passthrough writers for logs"))
+				}
+				if _, err := io.WriteString(stdout, "plain line\n"); err != nil {
+					recordRunnerErr(fmt.Errorf("write stdout: %w", err))
+				}
+				return commandResult{target: stack, streamed: true}
+			}
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := runCLI(context.Background(), &stdout, &stderr, tc.argv, runner)
+			if runnerErr != nil {
+				t.Fatalf("runner assertion failed: %v", runnerErr)
+			}
+			if code != 0 {
+				t.Fatalf("expected success, got %d with stderr %q", code, stderr.String())
+			}
+			output := stdout.String()
+			if strings.Contains(output, "[.] plain line") || strings.Contains(output, "[api] plain line") {
+				t.Fatalf("expected passthrough logs output without target prefixes, got %q", output)
+			}
+			if tc.name == "serial logs" && strings.Count(output, "plain line") != 2 {
+				t.Fatalf("expected output from both targets, got %q", output)
+			}
+			if tc.name == "single target logs" && strings.Count(output, "plain line") != 1 {
+				t.Fatalf("expected output from one target, got %q", output)
+			}
+		})
 	}
 }
 

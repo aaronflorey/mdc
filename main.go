@@ -620,7 +620,7 @@ func outputWriters(mode outputMode, stdout io.Writer, stderr io.Writer) targetWr
 }
 
 func outputModeForArgs(args []string, jobs int, targetCount int) (outputMode, error) {
-	command, _ := composeCommand(args)
+	command, commandIndex := composeCommand(args)
 	parallel := parallelTargetCount(jobs, targetCount) > 1
 
 	if command == "pull" {
@@ -629,6 +629,16 @@ func outputModeForArgs(args []string, jobs int, targetCount int) (outputMode, er
 
 	if command == "build" {
 		if parallel {
+			return outputModeBuffered, nil
+		}
+		return outputModePassthrough, nil
+	}
+
+	if command == "logs" {
+		if parallel {
+			if logsCommandRequestsFollow(args, commandIndex) {
+				return outputModeInterleaved, nil
+			}
 			return outputModeBuffered, nil
 		}
 		return outputModePassthrough, nil
@@ -676,11 +686,43 @@ func isInteractiveComposeCommand(command string) bool {
 
 func isInterleavedComposeCommand(command string) bool {
 	switch command {
-	case "create", "down", "logs", "pull", "restart", "start", "stop", "up":
+	case "create", "down", "pull", "restart", "start", "stop", "up":
 		return true
 	default:
 		return false
 	}
+}
+
+func logsCommandRequestsFollow(args []string, commandIndex int) bool {
+	if commandIndex < 0 {
+		return false
+	}
+
+	for i := commandIndex + 1; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "-f" || arg == "--follow":
+			return true
+		case strings.HasPrefix(arg, "--follow="):
+			value, ok := strings.CutPrefix(arg, "--follow=")
+			if !ok {
+				return true
+			}
+			value = strings.TrimSpace(value)
+			if value == "" {
+				return true
+			}
+			parsed, err := strconv.ParseBool(value)
+			if err != nil {
+				return true
+			}
+			if parsed {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 func shouldMergePS(args []string) bool {
