@@ -185,7 +185,7 @@ func TestOutputModeForArgsUsesCommandBehavior(t *testing.T) {
 		wantMode  outputMode
 		wantError string
 	}{
-		{name: "parallel up interleaves", args: []string{"up", "-d"}, jobs: 0, targets: 2, wantMode: outputModeInterleaved},
+		{name: "parallel up buffers", args: []string{"up", "-d"}, jobs: 0, targets: 2, wantMode: outputModeBuffered},
 		{name: "serial up passes through", args: []string{"up", "-d"}, jobs: 1, targets: 2, wantMode: outputModePassthrough},
 		{name: "parallel logs buffers without follow", args: []string{"logs", "--tail", "50"}, jobs: 0, targets: 2, wantMode: outputModeBuffered},
 		{name: "parallel logs follow short flag interleaves", args: []string{"logs", "-f"}, jobs: 0, targets: 2, wantMode: outputModeInterleaved},
@@ -222,6 +222,54 @@ func TestOutputModeForArgsUsesCommandBehavior(t *testing.T) {
 				t.Fatalf("expected mode %v, got %v", test.wantMode, gotMode)
 			}
 		})
+	}
+}
+
+func TestSummarizeComposeStatusLine(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want string
+	}{
+		{name: "image pulling", line: "Image ghcr.io/acme/app:latest Pulling", want: "pulling ghcr.io/acme/app:latest"},
+		{name: "image pulled", line: "Image ghcr.io/acme/app:latest Pulled", want: "pulled ghcr.io/acme/app:latest"},
+		{name: "container healthy", line: "Container tracearr-redis-1 Healthy", want: "tracearr-redis-1 Healthy"},
+		{name: "layer downloading", line: "122955722495 Downloading 136.3MB", want: "122955722495 Downloading 136.3MB"},
+		{name: "fallback", line: "some other line", want: "some other line"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := summarizeComposeStatusLine(test.line); got != test.want {
+				t.Fatalf("expected %q, got %q", test.want, got)
+			}
+		})
+	}
+}
+
+func TestLiveStatusWriterBuffersRawOutputAndTracksLatestStatus(t *testing.T) {
+	var dest bytes.Buffer
+	board := newLiveStatusBoard(&dest, []target{{Label: "."}, {Label: "api"}})
+	board.start()
+
+	writer := &liveStatusWriter{board: board, target: target{Label: "api"}}
+	input := "Image ghcr.io/acme/app:latest Pulling\r122955722495 Downloading 136.3MB\rContainer api-web-1 Started\n"
+	if _, err := io.WriteString(writer, input); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	writer.finishStreamingOutput()
+
+	if got := writer.bufferedOutput(); got != input {
+		t.Fatalf("expected raw output %q, got %q", input, got)
+	}
+	if got := board.statuses["api"]; got != "api-web-1 Started" {
+		t.Fatalf("expected latest status to be tracked, got %q", got)
+	}
+	if !strings.Contains(dest.String(), "Running 2 compose projects...") {
+		t.Fatalf("expected board header, got %q", dest.String())
+	}
+	if !strings.Contains(dest.String(), "[api]") {
+		t.Fatalf("expected api row render, got %q", dest.String())
 	}
 }
 
@@ -374,8 +422,8 @@ func TestRunCLIReportsNonZeroWhenAnyTargetFails(t *testing.T) {
 	if code != 3 {
 		t.Fatalf("expected exit code 3, got %d", code)
 	}
-	if !strings.Contains(stdout.String(), "[.]\nok") {
-		t.Fatalf("expected successful target output, got %q", stdout.String())
+	if !strings.Contains(stdout.String(), "[.] up complete\n") {
+		t.Fatalf("expected successful target summary, got %q", stdout.String())
 	}
 	if !strings.Contains(stderr.String(), "api (boom)") {
 		t.Fatalf("expected failure summary, got %q", stderr.String())
@@ -764,7 +812,7 @@ func TestRunCLIPassesThroughNestedPSArguments(t *testing.T) {
 	}
 }
 
-func TestRunCLIInterleavesLiveCommandOutput(t *testing.T) {
+func TestRunCLIBuffersParallelUpOutput(t *testing.T) {
 	root := t.TempDir()
 	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
 	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
@@ -780,32 +828,105 @@ func TestRunCLIInterleavesLiveCommandOutput(t *testing.T) {
 		t.Fatalf("chdir: %v", err)
 	}
 
+	var runnerErr error
+	var runnerErrMu sync.Mutex
+	recordRunnerErr := func(err error) {
+		runnerErrMu.Lock()
+		defer runnerErrMu.Unlock()
+		if runnerErr == nil {
+			runnerErr = err
+		}
+	}
+
 	runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
 		if strings.Join(args, " ") != "up -d" {
-			t.Fatalf("unexpected args: %v", args)
+			recordRunnerErr(fmt.Errorf("unexpected args: %v", args))
 		}
-		if stdout == nil || stderr == nil {
-			t.Fatal("expected live writers for interleaved command")
+		if stdout != nil || stderr != nil {
+			recordRunnerErr(fmt.Errorf("expected buffered up output"))
 		}
-		if _, err := io.WriteString(stdout, "started\n"); err != nil {
-			t.Fatalf("write stdout: %v", err)
-		}
-		return commandResult{target: stack, streamed: true}
+		return commandResult{target: stack, stdout: "started"}
 	}
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	code := runCLI(context.Background(), &stdout, &stderr, []string{"up", "-d"}, runner)
 
+	if runnerErr != nil {
+		t.Fatalf("runner assertion failed: %v", runnerErr)
+	}
 	if code != 0 {
 		t.Fatalf("expected success, got %d with stderr %q", code, stderr.String())
 	}
 	output := stdout.String()
-	if !strings.Contains(output, "[.] started\n") {
-		t.Fatalf("expected root target output, got %q", output)
+	if strings.Contains(output, "started") {
+		t.Fatalf("expected buffered success summary, got %q", output)
 	}
-	if !strings.Contains(output, "[api] started\n") {
-		t.Fatalf("expected api target output, got %q", output)
+	if !strings.Contains(output, "[.] up complete\n") {
+		t.Fatalf("expected root target summary, got %q", output)
+	}
+	if !strings.Contains(output, "[api] up complete\n") {
+		t.Fatalf("expected api target summary, got %q", output)
+	}
+}
+
+func TestRunCLIKeepsUpFailureDetailsInBufferedMode(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(wd)
+	}()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	var runnerErr error
+	var runnerErrMu sync.Mutex
+	recordRunnerErr := func(err error) {
+		runnerErrMu.Lock()
+		defer runnerErrMu.Unlock()
+		if runnerErr == nil {
+			runnerErr = err
+		}
+	}
+
+	runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
+		if strings.Join(args, " ") != "up -d" {
+			recordRunnerErr(fmt.Errorf("unexpected args: %v", args))
+		}
+		if stdout != nil || stderr != nil {
+			recordRunnerErr(fmt.Errorf("expected buffered up output"))
+		}
+		if stack.Label == "api" {
+			return commandResult{target: stack, stderr: "image pull failed", exitCode: 9, err: fmt.Errorf("image pull failed")}
+		}
+		return commandResult{target: stack, stdout: "started"}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"up", "-d"}, runner)
+	if runnerErr != nil {
+		t.Fatalf("runner assertion failed: %v", runnerErr)
+	}
+	if code != 9 {
+		t.Fatalf("expected failure exit code, got %d", code)
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "[.] up complete\n") {
+		t.Fatalf("expected successful target summary, got %q", output)
+	}
+	if !strings.Contains(output, "[api]\nimage pull failed\n") {
+		t.Fatalf("expected failed target stderr output, got %q", output)
+	}
+	if !strings.Contains(stderr.String(), "1 target(s) failed: api (image pull failed)") {
+		t.Fatalf("expected up failure summary, got %q", stderr.String())
 	}
 }
 

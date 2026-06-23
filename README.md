@@ -61,6 +61,7 @@ task ci
   4. `docker-compose.yml`
 - `mdc` preserves the target directory basename as the Compose project name when it is unique, and switches to a deterministic unique name only when duplicate basenames would collide.
 - Most non-`ps` commands print grouped output per project in sorted directory order.
+- Top-level multi-target `mdc up` keeps one live status line per target on TTYs so concurrent Docker progress stays stable; non-TTY output falls back to grouped summaries, and failed targets still print grouped details.
 - Top-level multi-target `mdc logs` without follow mode (`-f` / `--follow`) uses grouped output for easier historical scanning, while explicit follow mode keeps live interleaved prefixed lines for per-target attribution.
 - Top-level multi-target `mdc build` (parallel mode) suppresses noisy successful BuildKit logs and prints concise `[target] build complete` summaries; failed targets still print detailed stdout/stderr plus the standard failure summary.
 - Top-level `mdc events` is serial-only for multi-target runs; if multiple targets are discovered, rerun with `--jobs 1`.

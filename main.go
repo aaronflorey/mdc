@@ -137,7 +137,20 @@ func runCLI(ctx context.Context, stdout io.Writer, stderr io.Writer, argv []stri
 		return 2
 	}
 
-	results := executeTargets(ctx, targets, composeArgs, opts.jobs, runner, outputWriters(mode, stdout, stderr))
+	writers := outputWriters(mode, stdout, stderr)
+	var liveBoard *liveStatusBoard
+	if shouldUseLiveStatusBoard(command, mode, stdout, targets) {
+		liveBoard = newLiveStatusBoard(stdout, targets)
+		liveBoard.start()
+		writers = func(stack target) (io.Writer, io.Writer) {
+			return &liveStatusWriter{board: liveBoard, target: stack}, &liveStatusWriter{board: liveBoard, target: stack}
+		}
+	}
+
+	results := executeTargets(ctx, targets, composeArgs, opts.jobs, runner, writers)
+	if liveBoard != nil {
+		liveBoard.finish()
+	}
 	if mode == outputModeBuffered {
 		writeBufferedOutput(stdout, command, results)
 	} else {
@@ -397,6 +410,14 @@ func execCompose(ctx context.Context, stack target, args []string, stdout io.Wri
 	err := cmd.Run()
 	finishStreamingOutput(cmd.Stdout)
 	finishStreamingOutput(cmd.Stderr)
+	stdoutText := stdoutBuffer.String()
+	if buffered, ok := bufferedOutput(cmd.Stdout); ok {
+		stdoutText = buffered
+	}
+	stderrText := stderrBuffer.String()
+	if buffered, ok := bufferedOutput(cmd.Stderr); ok {
+		stderrText = buffered
+	}
 	exitCode := 0
 	if err != nil {
 		exitCode = 1
@@ -408,8 +429,8 @@ func execCompose(ctx context.Context, stack target, args []string, stdout io.Wri
 
 	return commandResult{
 		target:   stack,
-		stdout:   stdoutBuffer.String(),
-		stderr:   stderrBuffer.String(),
+		stdout:   stdoutText,
+		stderr:   stderrText,
 		exitCode: exitCode,
 		err:      err,
 		streamed: streamed,
@@ -425,6 +446,10 @@ type streamingOutputFinisher interface {
 	finishStreamingOutput()
 }
 
+type bufferedStreamingOutput interface {
+	bufferedOutput() string
+}
+
 func shouldStreamOutput(w io.Writer) bool {
 	_, ok := w.(streamOutputWriter)
 	return ok
@@ -436,6 +461,14 @@ func finishStreamingOutput(w io.Writer) {
 		return
 	}
 	finisher.finishStreamingOutput()
+}
+
+func bufferedOutput(w io.Writer) (string, bool) {
+	buffered, ok := w.(bufferedStreamingOutput)
+	if !ok {
+		return "", false
+	}
+	return buffered.bufferedOutput(), true
 }
 
 func terminalWriter(w io.Writer) *os.File {
@@ -512,6 +545,167 @@ func (w *linePrefixWriter) Write(p []byte) (int, error) {
 	}
 
 	return len(p), nil
+}
+
+type liveStatusBoard struct {
+	dest       io.Writer
+	targets    []target
+	statuses   map[string]string
+	labelWidth int
+	rendered   bool
+	mu         sync.Mutex
+}
+
+func newLiveStatusBoard(dest io.Writer, targets []target) *liveStatusBoard {
+	board := &liveStatusBoard{
+		dest:     dest,
+		targets:  append([]target(nil), targets...),
+		statuses: make(map[string]string, len(targets)),
+	}
+	for _, stack := range targets {
+		board.statuses[stack.Label] = "waiting"
+		board.labelWidth = max(board.labelWidth, len("["+stack.Label+"]"))
+	}
+	return board
+}
+
+func (b *liveStatusBoard) start() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.rendered {
+		return
+	}
+	_, _ = fmt.Fprintf(b.dest, "Running %d compose projects...\n", len(b.targets))
+	b.renderLocked(false)
+}
+
+func (b *liveStatusBoard) update(label string, status string) {
+	if strings.TrimSpace(status) == "" {
+		return
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.statuses[label] = status
+	b.renderLocked(true)
+}
+
+func (b *liveStatusBoard) finish() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.rendered {
+		return
+	}
+	_, _ = fmt.Fprintf(b.dest, "\x1b[%dA", len(b.targets))
+	for range b.targets {
+		_, _ = io.WriteString(b.dest, "\r\x1b[2K\n")
+	}
+	_, _ = fmt.Fprintf(b.dest, "\x1b[%dA", len(b.targets))
+	b.rendered = false
+}
+
+func (b *liveStatusBoard) renderLocked(moveUp bool) {
+	if moveUp && b.rendered {
+		_, _ = fmt.Fprintf(b.dest, "\x1b[%dA", len(b.targets))
+	}
+	for _, stack := range b.targets {
+		_, _ = fmt.Fprintf(b.dest, "\r\x1b[2K%-*s %s\n", b.labelWidth, "["+stack.Label+"]", b.statuses[stack.Label])
+	}
+	b.rendered = true
+}
+
+type liveStatusWriter struct {
+	board  *liveStatusBoard
+	target target
+	raw    bytes.Buffer
+	line   bytes.Buffer
+	mu     sync.Mutex
+}
+
+func (w *liveStatusWriter) streamOutputWriter() {}
+
+func (w *liveStatusWriter) bufferedOutput() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.raw.String()
+}
+
+func (w *liveStatusWriter) finishStreamingOutput() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.flushLineLocked()
+}
+
+func (w *liveStatusWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_, _ = w.raw.Write(p)
+
+	start := 0
+	for start < len(p) {
+		lineEnd := bytes.IndexAny(p[start:], "\r\n")
+		if lineEnd < 0 {
+			_, _ = w.line.Write(p[start:])
+			return len(p), nil
+		}
+
+		lineEnd += start
+		if lineEnd > start {
+			_, _ = w.line.Write(p[start:lineEnd])
+		}
+		w.flushLineLocked()
+
+		start = lineEnd + 1
+		if p[lineEnd] == '\r' && start < len(p) && p[start] == '\n' {
+			start++
+		}
+	}
+
+	return len(p), nil
+}
+
+func (w *liveStatusWriter) flushLineLocked() {
+	line := strings.TrimSpace(w.line.String())
+	w.line.Reset()
+	if line == "" {
+		return
+	}
+	w.board.update(w.target.Label, summarizeComposeStatusLine(line))
+}
+
+func summarizeComposeStatusLine(line string) string {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return ""
+	}
+
+	if strings.HasPrefix(line, "Image ") {
+		rest := strings.TrimSpace(strings.TrimPrefix(line, "Image "))
+		if image, _, ok := strings.Cut(rest, " Pulling"); ok {
+			return "pulling " + strings.TrimSpace(image)
+		}
+		if image, _, ok := strings.Cut(rest, " Pulled"); ok {
+			return "pulled " + strings.TrimSpace(image)
+		}
+	}
+
+	if strings.HasPrefix(line, "Container ") {
+		rest := strings.TrimSpace(strings.TrimPrefix(line, "Container "))
+		parts := strings.Fields(rest)
+		if len(parts) >= 2 {
+			return parts[0] + " " + strings.Join(parts[1:], " ")
+		}
+	}
+
+	parts := strings.Fields(line)
+	if len(parts) >= 2 {
+		switch parts[1] {
+		case "Downloading", "Extracting", "Pulling", "Waiting", "Healthy", "Running", "Starting", "Started", "Recreate", "Recreated", "Pull", "Already":
+			return strings.Join(parts, " ")
+		}
+	}
+
+	return line
 }
 
 func composeCommandArgs(stack target, args []string) []string {
@@ -634,6 +828,13 @@ func outputModeForArgs(args []string, jobs int, targetCount int) (outputMode, er
 		return outputModePassthrough, nil
 	}
 
+	if command == "up" {
+		if parallel {
+			return outputModeBuffered, nil
+		}
+		return outputModePassthrough, nil
+	}
+
 	if command == "logs" {
 		if parallel {
 			if logsCommandRequestsFollow(args, commandIndex) {
@@ -666,6 +867,13 @@ func outputModeForArgs(args []string, jobs int, targetCount int) (outputMode, er
 	}
 
 	return outputModeBuffered, nil
+}
+
+func shouldUseLiveStatusBoard(command string, mode outputMode, stdout io.Writer, targets []target) bool {
+	if command != "up" || mode != outputModeBuffered || len(targets) < 2 {
+		return false
+	}
+	return terminalWriter(stdout) != nil
 }
 
 func parallelTargetCount(jobs int, targetCount int) int {
@@ -1335,6 +1543,8 @@ func bufferedTargetOutput(command string, result commandResult) string {
 			return fmt.Sprintf("[%s] pull complete\n", result.target.Label)
 		case "build":
 			return fmt.Sprintf("[%s] build complete\n", result.target.Label)
+		case "up":
+			return fmt.Sprintf("[%s] up complete\n", result.target.Label)
 		}
 	}
 
