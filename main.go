@@ -385,6 +385,7 @@ func execCompose(ctx context.Context, stack target, args []string, stdout io.Wri
 
 	cmd := exec.CommandContext(ctx, "docker", commandArgs...)
 	cmd.Dir = stack.Dir
+	cmd.Stdin = os.Stdin
 	var stdoutBuffer bytes.Buffer
 	var stderrBuffer bytes.Buffer
 	streamed := false

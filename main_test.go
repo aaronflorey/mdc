@@ -390,6 +390,56 @@ func TestExecComposeRunsInTargetDirectory(t *testing.T) {
 	}
 }
 
+func TestExecComposeForwardsStdin(t *testing.T) {
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	targetDir := filepath.Join(root, "stack")
+	composeFile := filepath.Join(targetDir, "compose.yaml")
+
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", binDir, err)
+	}
+	mustWriteFile(t, composeFile)
+
+	scriptPath := filepath.Join(binDir, "docker")
+	script := "#!/bin/sh\nIFS= read -r line\nprintf 'stdin:%s\\n' \"$line\"\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write %s: %v", scriptPath, err)
+	}
+
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	originalStdin := os.Stdin
+	t.Cleanup(func() {
+		os.Stdin = originalStdin
+	})
+	stdinReader, stdinWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stdin pipe: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = stdinReader.Close()
+	})
+	if _, err := stdinWriter.WriteString("forwarded input\\n"); err != nil {
+		t.Fatalf("write stdin: %v", err)
+	}
+	if err := stdinWriter.Close(); err != nil {
+		t.Fatalf("close stdin writer: %v", err)
+	}
+	os.Stdin = stdinReader
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	result := execCompose(context.Background(), target{Dir: targetDir, File: composeFile, Label: "."}, []string{"exec", "app", "sh"}, &stdout, &stderr)
+
+	if result.exitCode != 0 {
+		t.Fatalf("expected success, got %+v", result)
+	}
+	if !strings.Contains(result.stdout, "stdin:forwarded input") {
+		t.Fatalf("expected forwarded stdin in stdout, got %q", result.stdout)
+	}
+}
+
 func TestShouldMergePSIgnoresNestedPSArguments(t *testing.T) {
 	for _, args := range [][]string{{"exec", "app", "ps", "aux"}, {"run", "worker", "ps"}} {
 		if shouldMergePS(args) {
