@@ -40,7 +40,7 @@ mdc [mdc flags] <docker compose args...>
 
 - `--depth`: scan depth (`0` = current directory only, default `1`)
 - `--jobs`: max concurrent `docker compose` processes (`0` = all targets)
-- `--quiet-targets`: suppress per-target section headers for non-merged output
+- `--quiet-targets`: suppress per-target section headers; merged tables, live prefixes, and completion labels retain attribution
 
 ## Setup
 

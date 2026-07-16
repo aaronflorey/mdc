@@ -152,7 +152,7 @@ func runCLI(ctx context.Context, stdout io.Writer, stderr io.Writer, argv []stri
 		liveBoard.finish()
 	}
 	if mode == outputModeBuffered {
-		writeBufferedOutput(stdout, command, results)
+		writeBufferedOutput(stdout, command, results, opts.quietTargets)
 	} else {
 		writeStandardOutput(stdout, results, opts.quietTargets)
 	}
@@ -1549,10 +1549,10 @@ func writeStandardOutput(stdout io.Writer, results []commandResult, quiet bool) 
 	}
 }
 
-func writeBufferedOutput(stdout io.Writer, command string, results []commandResult) {
+func writeBufferedOutput(stdout io.Writer, command string, results []commandResult, quiet bool) {
 	first := true
 	for _, result := range results {
-		body := bufferedTargetOutput(command, result)
+		body := bufferedTargetOutput(command, result, quiet)
 		if body == "" {
 			continue
 		}
@@ -1565,7 +1565,7 @@ func writeBufferedOutput(stdout io.Writer, command string, results []commandResu
 	}
 }
 
-func bufferedTargetOutput(command string, result commandResult) string {
+func bufferedTargetOutput(command string, result commandResult, quiet bool) string {
 	if result.exitCode == 0 {
 		switch command {
 		case "pull":
@@ -1577,7 +1577,7 @@ func bufferedTargetOutput(command string, result commandResult) string {
 		}
 	}
 
-	return targetOutput(result, false)
+	return targetOutput(result, quiet)
 }
 
 func targetOutput(result commandResult, quiet bool) string {

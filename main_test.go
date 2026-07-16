@@ -1359,6 +1359,88 @@ func TestRunCLIBuffersOnlyParallelBuildOutput(t *testing.T) {
 	}
 }
 
+func TestRunCLIHonorsQuietTargetsInBufferedOutput(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(wd)
+	}()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	tests := []struct {
+		name          string
+		argv          []string
+		wantHeaders   bool
+		wantBodies    bool
+		wantSummaries bool
+	}{
+		{
+			name:       "generic output omits headers when quiet",
+			argv:       []string{"--quiet-targets", "config"},
+			wantBodies: true,
+		},
+		{
+			name:        "generic output keeps headers by default",
+			argv:        []string{"config"},
+			wantHeaders: true,
+			wantBodies:  true,
+		},
+		{
+			name:          "build summaries retain target labels when quiet",
+			argv:          []string{"--quiet-targets", "build"},
+			wantSummaries: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
+				if stdout != nil || stderr != nil {
+					return commandResult{target: stack, exitCode: 1, stderr: "expected buffered output"}
+				}
+				switch strings.Join(args, " ") {
+				case "config":
+					return commandResult{target: stack, stdout: fmt.Sprintf("config for %s", stack.Label)}
+				case "build":
+					return commandResult{target: stack, stdout: "noisy build output"}
+				default:
+					return commandResult{target: stack, exitCode: 1, stderr: "unexpected args"}
+				}
+			}
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := runCLI(context.Background(), &stdout, &stderr, test.argv, runner)
+			if code != 0 {
+				t.Fatalf("expected success, got %d with stderr %q", code, stderr.String())
+			}
+
+			output := stdout.String()
+			if test.wantHeaders {
+				if !strings.Contains(output, "[.]\n") || !strings.Contains(output, "[api]\n") {
+					t.Fatalf("expected section headers, got %q", output)
+				}
+			} else if strings.Contains(output, "[.]\n") || strings.Contains(output, "[api]\n") {
+				t.Fatalf("expected no section headers, got %q", output)
+			}
+			if test.wantBodies && (!strings.Contains(output, "config for .") || !strings.Contains(output, "config for api")) {
+				t.Fatalf("expected both config bodies, got %q", output)
+			}
+			if test.wantSummaries && (!strings.Contains(output, "[.] build complete\n") || !strings.Contains(output, "[api] build complete\n")) {
+				t.Fatalf("expected labeled build summaries, got %q", output)
+			}
+		})
+	}
+}
+
 func TestRunCLISummarizesPullOutput(t *testing.T) {
 	root := t.TempDir()
 	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
