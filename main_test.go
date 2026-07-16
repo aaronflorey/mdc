@@ -185,8 +185,17 @@ func TestOutputModeForArgsUsesCommandBehavior(t *testing.T) {
 		wantMode  outputMode
 		wantError string
 	}{
-		{name: "parallel up buffers", args: []string{"up", "-d"}, jobs: 0, targets: 2, wantMode: outputModeBuffered},
-		{name: "serial up passes through", args: []string{"up", "-d"}, jobs: 1, targets: 2, wantMode: outputModePassthrough},
+		{name: "parallel attached up interleaves", args: []string{"up"}, jobs: 0, targets: 2, wantMode: outputModeInterleaved},
+		{name: "parallel detached up short flag buffers", args: []string{"up", "-d"}, jobs: 0, targets: 2, wantMode: outputModeBuffered},
+		{name: "parallel detached up long flag buffers", args: []string{"up", "--detach"}, jobs: 0, targets: 2, wantMode: outputModeBuffered},
+		{name: "parallel detached up long boolean flag buffers", args: []string{"up", "--detach=true"}, jobs: 0, targets: 2, wantMode: outputModeBuffered},
+		{name: "parallel detached up short boolean flag buffers", args: []string{"up", "-d=true"}, jobs: 0, targets: 2, wantMode: outputModeBuffered},
+		{name: "parallel false long detach flag interleaves", args: []string{"up", "--detach=false"}, jobs: 0, targets: 2, wantMode: outputModeInterleaved},
+		{name: "parallel false short detach flag interleaves", args: []string{"up", "-d=false"}, jobs: 0, targets: 2, wantMode: outputModeInterleaved},
+		{name: "parallel malformed detach flag interleaves", args: []string{"up", "--detach=perhaps"}, jobs: 0, targets: 2, wantMode: outputModeInterleaved},
+		{name: "parallel detach after separator interleaves", args: []string{"up", "--", "--detach"}, jobs: 0, targets: 2, wantMode: outputModeInterleaved},
+		{name: "serial attached up passes through", args: []string{"up"}, jobs: 1, targets: 2, wantMode: outputModePassthrough},
+		{name: "single-target attached up passes through", args: []string{"up"}, jobs: 0, targets: 1, wantMode: outputModePassthrough},
 		{name: "parallel logs buffers without follow", args: []string{"logs", "--tail", "50"}, jobs: 0, targets: 2, wantMode: outputModeBuffered},
 		{name: "parallel logs follow short flag interleaves", args: []string{"logs", "-f"}, jobs: 0, targets: 2, wantMode: outputModeInterleaved},
 		{name: "parallel logs follow long flag interleaves", args: []string{"logs", "--follow"}, jobs: 0, targets: 2, wantMode: outputModeInterleaved},
@@ -812,7 +821,65 @@ func TestRunCLIPassesThroughNestedPSArguments(t *testing.T) {
 	}
 }
 
-func TestRunCLIBuffersParallelUpOutput(t *testing.T) {
+func TestRunCLIInterleavesTopLevelParallelAttachedUp(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(wd)
+	}()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	var runnerErr error
+	var runnerErrMu sync.Mutex
+	recordRunnerErr := func(err error) {
+		runnerErrMu.Lock()
+		defer runnerErrMu.Unlock()
+		if runnerErr == nil {
+			runnerErr = err
+		}
+	}
+
+	runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
+		if strings.Join(args, " ") != "up" {
+			recordRunnerErr(fmt.Errorf("unexpected args: %v", args))
+		}
+		if stdout == nil || stderr == nil {
+			recordRunnerErr(fmt.Errorf("expected live writers for attached up"))
+			return commandResult{target: stack}
+		}
+		if _, err := io.WriteString(stdout, "up line\n"); err != nil {
+			recordRunnerErr(fmt.Errorf("write stdout: %w", err))
+		}
+		return commandResult{target: stack, streamed: true}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"up"}, runner)
+	if runnerErr != nil {
+		t.Fatalf("runner assertion failed: %v", runnerErr)
+	}
+	if code != 0 {
+		t.Fatalf("expected success, got %d with stderr %q", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "[.] up line\n") || !strings.Contains(output, "[api] up line\n") {
+		t.Fatalf("expected interleaved attached up output with per-target prefixes, got %q", output)
+	}
+	if strings.Contains(output, "up complete") {
+		t.Fatalf("expected attached up output without summaries, got %q", output)
+	}
+}
+
+func TestRunCLIBuffersParallelDetachedUpOutput(t *testing.T) {
 	root := t.TempDir()
 	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
 	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))

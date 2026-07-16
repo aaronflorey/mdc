@@ -829,8 +829,11 @@ func outputModeForArgs(args []string, jobs int, targetCount int) (outputMode, er
 	}
 
 	if command == "up" {
-		if parallel {
+		if parallel && upCommandRequestsDetach(args, commandIndex) {
 			return outputModeBuffered, nil
+		}
+		if parallel {
+			return outputModeInterleaved, nil
 		}
 		return outputModePassthrough, nil
 	}
@@ -899,6 +902,32 @@ func isInterleavedComposeCommand(command string) bool {
 	default:
 		return false
 	}
+}
+
+func upCommandRequestsDetach(args []string, commandIndex int) bool {
+	if commandIndex < 0 {
+		return false
+	}
+
+	for i := commandIndex + 1; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--":
+			return false
+		case arg == "-d" || arg == "--detach":
+			return true
+		case strings.HasPrefix(arg, "-d="):
+			value, _ := strings.CutPrefix(arg, "-d=")
+			parsed, err := strconv.ParseBool(value)
+			return err == nil && parsed
+		case strings.HasPrefix(arg, "--detach="):
+			value, _ := strings.CutPrefix(arg, "--detach=")
+			parsed, err := strconv.ParseBool(value)
+			return err == nil && parsed
+		}
+	}
+
+	return false
 }
 
 func logsCommandRequestsFollow(args []string, commandIndex int) bool {
