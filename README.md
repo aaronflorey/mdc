@@ -73,6 +73,8 @@ task ci
 
 ## Development
 
+Development requires Go 1.25.12 or newer on a currently supported Go release, plus [Task](https://taskfile.dev/) for the commands below.
+
 ```bash
 task setup
 task test

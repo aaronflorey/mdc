@@ -2,6 +2,8 @@
 
 ## Getting Started
 
+Contributing requires Go 1.25.12 or newer on a currently supported Go release, plus [Task](https://taskfile.dev/) for the commands below.
+
 ```bash
 git clone https://github.com/aaronflorey/mdc.git
 cd mdc
