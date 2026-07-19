@@ -1897,3 +1897,114 @@ func valueAfterFlag(args []string, flag string) string {
 	}
 	return ""
 }
+
+func TestSelectPSRenderStylePicksPlainForNonTTY(t *testing.T) {
+	if got := selectPSRenderStyle(&bytes.Buffer{}); got != psRenderStylePlain {
+		t.Fatalf("expected plain style for non-TTY writer, got %v", got)
+	}
+}
+
+func TestRenderPSTablePlainMatchesLegacyFormat(t *testing.T) {
+	rows := []psRow{
+		{Name: "root-web-1", Service: "web", Status: "running", Ports: "0.0.0.0:8080->80/tcp"},
+		{Name: "api-web-1", Service: "web", Status: "running (healthy)", Ports: ""},
+	}
+
+	got := renderPSTable(rows, psRenderStylePlain)
+
+	if strings.Count(got, "NAME") != 1 {
+		t.Fatalf("expected single header, got %q", got)
+	}
+	if !strings.Contains(got, "root-web-1") || !strings.Contains(got, "api-web-1") {
+		t.Fatalf("expected both rows, got %q", got)
+	}
+	if strings.Contains(got, "\x1b[") {
+		t.Fatalf("plain output should not contain ANSI escapes, got %q", got)
+	}
+}
+
+func TestRenderPSTableStyledEmitsANSIEscapes(t *testing.T) {
+	rows := []psRow{
+		{Name: "root-web-1", Service: "web", Status: "running", Ports: "0.0.0.0:8080->80/tcp"},
+		{Name: "api-web-1", Service: "web", Status: "running (healthy)", Ports: ""},
+	}
+
+	got := renderPSTable(rows, psRenderStyleStyled)
+
+	if !strings.Contains(got, "\x1b[") {
+		t.Fatalf("styled output should contain ANSI escapes, got %q", got)
+	}
+	if !strings.Contains(got, ansiBold+"NAME") {
+		t.Fatalf("expected bold NAME header, got %q", got)
+	}
+	if !strings.Contains(got, "─") {
+		t.Fatalf("expected separator line, got %q", got)
+	}
+	if !strings.Contains(got, ansiReset) {
+		t.Fatalf("expected reset escapes, got %q", got)
+	}
+}
+
+func TestClassifyPSStatus(t *testing.T) {
+	tests := []struct {
+		name   string
+		status string
+		want   psStatusKind
+	}{
+		{name: "bare running", status: "running", want: psStatusRunning},
+		{name: "running prefix", status: "running (healthy)", want: psStatusHealthy},
+		{name: "healthy paren", status: "Up 5 minutes (healthy)", want: psStatusHealthy},
+		{name: "unhealthy", status: "Up 5 minutes (unhealthy)", want: psStatusUnhealthy},
+		{name: "starting", status: "health: starting", want: psStatusStarting},
+		{name: "paused", status: "paused", want: psStatusPaused},
+		{name: "exited", status: "exited (0)", want: psStatusExited},
+		{name: "exit code", status: "exit 137", want: psStatusExited},
+		{name: "restarting", status: "restarting", want: psStatusRestarting},
+		{name: "created", status: "created", want: psStatusCreated},
+		{name: "dead", status: "dead", want: psStatusDead},
+		{name: "unknown", status: "weird-state", want: psStatusUnknown},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := classifyPSStatus(test.status); got != test.want {
+				t.Fatalf("expected %v, got %v for %q", test.want, got, test.status)
+			}
+		})
+	}
+}
+
+func TestStatusDecorationMapsKindsToColors(t *testing.T) {
+	tests := []struct {
+		kind       psStatusKind
+		wantColor  string
+		wantBullet string
+	}{
+		{kind: psStatusRunning, wantColor: ansiBlue, wantBullet: "●"},
+		{kind: psStatusHealthy, wantColor: ansiGreen, wantBullet: "●"},
+		{kind: psStatusUnhealthy, wantColor: ansiRed, wantBullet: "✖"},
+		{kind: psStatusStarting, wantColor: ansiYellow, wantBullet: "◐"},
+		{kind: psStatusExited, wantColor: ansiGray, wantBullet: "○"},
+	}
+
+	for _, test := range tests {
+		t.Run(fmt.Sprintf("kind-%d", test.kind), func(t *testing.T) {
+			deco := statusDecoration(test.kind)
+			if deco.color != test.wantColor {
+				t.Fatalf("expected color %q, got %q", test.wantColor, deco.color)
+			}
+			if deco.bullet != test.wantBullet {
+				t.Fatalf("expected bullet %q, got %q", test.wantBullet, deco.bullet)
+			}
+		})
+	}
+}
+
+func TestRenderPSTableStyledAlignsColumns(t *testing.T) {
+	rows := []psRow{
+		{Name: "short", Service: "svc", Status: "running", Ports: ""},
+		{Name: "much-longer-container-name", Service: "service", Status: "running (healthy)", Ports: "0.0.0.0:8080->80/tcp"},
+	}
+
+	renderPSTable(rows, psRenderStyleStyled)
+}

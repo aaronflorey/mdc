@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -80,6 +81,21 @@ type psRow struct {
 	Ports   string
 	key     string
 }
+
+const (
+	ansiReset      = "\x1b[0m"
+	ansiBold       = "\x1b[1m"
+	ansiDim        = "\x1b[2m"
+	ansiRed         = "\x1b[31m"
+	ansiGreen      = "\x1b[32m"
+	ansiYellow     = "\x1b[33m"
+	ansiBlue       = "\x1b[34m"
+	ansiGray       = "\x1b[90m"
+	ansiBoldGreen  = "\x1b[1;32m"
+	ansiBoldYellow = "\x1b[1;33m"
+	ansiBoldRed    = "\x1b[1;31m"
+	ansiBoldGray   = "\x1b[1;90m"
+)
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -1065,7 +1081,7 @@ func runPS(ctx context.Context, stdout io.Writer, stderr io.Writer, targets []ta
 			fmt.Fprintln(stdout, "No containers found.")
 			return 0
 		}
-		fmt.Fprint(stdout, renderPSTable(rows))
+		fmt.Fprint(stdout, renderPSTable(rows, selectPSRenderStyle(stdout)))
 		return 0
 	}
 
@@ -1081,6 +1097,20 @@ func runPS(ctx context.Context, stdout io.Writer, stderr io.Writer, targets []ta
 	}
 
 	return 0
+}
+
+type psRenderStyle int
+
+const (
+	psRenderStylePlain psRenderStyle = iota
+	psRenderStyleStyled
+)
+
+func selectPSRenderStyle(stdout io.Writer) psRenderStyle {
+	if terminalWriter(stdout) == nil {
+		return psRenderStylePlain
+	}
+	return psRenderStyleStyled
 }
 
 func runImages(ctx context.Context, stdout io.Writer, stderr io.Writer, targets []target, opts options, composeArgs []string, runner composeRunner) int {
@@ -1273,7 +1303,149 @@ func formatPublishers(value any) string {
 	return strings.Join(ports, ", ")
 }
 
-func renderPSTable(rows []psRow) string {
+func renderPSTable(rows []psRow, style psRenderStyle) string {
+	switch style {
+	case psRenderStyleStyled:
+		return renderPSTableStyled(rows)
+	default:
+		return renderPSTablePlain(rows)
+	}
+}
+
+type psStatusKind int
+
+const (
+	psStatusRunning psStatusKind = iota
+	psStatusHealthy
+	psStatusUnhealthy
+	psStatusStarting
+	psStatusRestarting
+	psStatusExited
+	psStatusPaused
+	psStatusDead
+	psStatusCreated
+	psStatusUnknown
+)
+
+func classifyPSStatus(status string) psStatusKind {
+	lower := strings.ToLower(strings.TrimSpace(status))
+	switch {
+	case strings.Contains(lower, "unhealthy"):
+		return psStatusUnhealthy
+	case strings.Contains(lower, "healthy"):
+		return psStatusHealthy
+	case lower == "restarting" || strings.HasPrefix(lower, "restarting"):
+		return psStatusRestarting
+	case strings.Contains(lower, "starting") || strings.Contains(lower, "initializing"):
+		return psStatusStarting
+	case lower == "paused":
+		return psStatusPaused
+	case lower == "exited" || strings.HasPrefix(lower, "exited ") || strings.HasPrefix(lower, "exit "):
+		return psStatusExited
+	case lower == "dead":
+		return psStatusDead
+	case lower == "created" || strings.HasPrefix(lower, "created "):
+		return psStatusCreated
+	case lower == "running" || strings.HasPrefix(lower, "running "):
+		return psStatusRunning
+	default:
+		return psStatusUnknown
+	}
+}
+
+type psStatusDecoration struct {
+	bullet string
+	color  string
+}
+
+func statusDecoration(kind psStatusKind) psStatusDecoration {
+	switch kind {
+	case psStatusRunning:
+		return psStatusDecoration{bullet: "●", color: ansiBlue}
+	case psStatusHealthy:
+		return psStatusDecoration{bullet: "●", color: ansiGreen}
+	case psStatusStarting:
+		return psStatusDecoration{bullet: "◐", color: ansiYellow}
+	case psStatusRestarting:
+		return psStatusDecoration{bullet: "↻", color: ansiYellow}
+	case psStatusUnhealthy:
+		return psStatusDecoration{bullet: "✖", color: ansiRed}
+	case psStatusExited:
+		return psStatusDecoration{bullet: "○", color: ansiGray}
+	case psStatusPaused:
+		return psStatusDecoration{bullet: "❘", color: ansiGray}
+	case psStatusDead:
+		return psStatusDecoration{bullet: "✖", color: ansiRed}
+	case psStatusCreated:
+		return psStatusDecoration{bullet: "◌", color: ansiGray}
+	default:
+		return psStatusDecoration{bullet: "●", color: ansiGray}
+	}
+}
+
+func renderPSTableStyled(rows []psRow) string {
+	headers := []string{"NAME", "SERVICE", "STATUS", "PORTS"}
+	widths := []int{visibleWidth(headers[0]), visibleWidth(headers[1]), visibleWidth(headers[2]), visibleWidth(headers[3])}
+
+	for _, row := range rows {
+		widths[0] = max(widths[0], visibleWidth(row.Name))
+		widths[1] = max(widths[1], visibleWidth(row.Service))
+		widths[2] = max(widths[2], visibleWidth(row.Status)+2)
+		widths[3] = max(widths[3], visibleWidth(row.Ports))
+	}
+
+	var out strings.Builder
+	writeStyledCell(&out, headers[0], widths[0], ansiBold)
+	out.WriteString("  ")
+	writeStyledCell(&out, headers[1], widths[1], ansiBold)
+	out.WriteString("  ")
+	writeStyledCell(&out, headers[2], widths[2], ansiBold)
+	out.WriteString("  ")
+	writeStyledCell(&out, headers[3], widths[3], ansiBold)
+	out.WriteByte('\n')
+
+	separator := strings.Repeat("─", widths[0]+widths[1]+widths[2]+widths[3]+6)
+	out.WriteString(ansiDim + separator + ansiReset + "\n")
+
+	for _, row := range rows {
+		writeStyledCell(&out, row.Name, widths[0], "")
+		out.WriteString("  ")
+		writeStyledCell(&out, row.Service, widths[1], ansiDim)
+		out.WriteString("  ")
+
+		status := row.Status
+		kind := classifyPSStatus(status)
+		deco := statusDecoration(kind)
+		styledStatus := fmt.Sprintf("%s%s%s %s", deco.color, deco.bullet, ansiReset, status)
+		writeStyledCell(&out, styledStatus, widths[2], "")
+
+		out.WriteString("  ")
+		writeStyledCell(&out, row.Ports, widths[3], ansiDim)
+		out.WriteByte('\n')
+	}
+
+	return out.String()
+}
+
+func writeStyledCell(out *strings.Builder, value string, width int, prefix string) {
+	visible := visibleWidth(value)
+	pad := width - visible
+	if pad < 0 {
+		pad = 0
+	}
+	if prefix != "" && value != "" {
+		out.WriteString(prefix)
+	}
+	out.WriteString(value)
+	if prefix != "" && value != "" {
+		out.WriteString(ansiReset)
+	}
+	if pad > 0 {
+		out.WriteString(strings.Repeat(" ", pad))
+	}
+}
+
+func renderPSTablePlain(rows []psRow) string {
 	headers := []string{"NAME", "SERVICE", "STATUS", "PORTS"}
 	widths := []int{len(headers[0]), len(headers[1]), len(headers[2]), len(headers[3])}
 
@@ -1291,6 +1463,21 @@ func renderPSTable(rows []psRow) string {
 	}
 
 	return out.String()
+}
+
+func displayWidth(s string) int {
+	n := 0
+	for range s {
+		n++
+	}
+	return n
+}
+
+var ansiEscapePattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func visibleWidth(s string) int {
+	stripped := ansiEscapePattern.ReplaceAllString(s, "")
+	return displayWidth(stripped)
 }
 
 func mergePSText(results []commandResult) string {
