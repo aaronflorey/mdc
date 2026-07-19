@@ -47,6 +47,7 @@ mdc [mdc flags] <docker compose args...>
 ```bash
 git clone https://github.com/aaronflorey/mdc.git
 cd mdc
+mise install
 task setup
 task ci
 ```
@@ -73,16 +74,19 @@ task ci
 
 ## Development
 
-Development requires Go 1.25.12 or newer on a currently supported Go release, plus [Task](https://taskfile.dev/) for the commands below.
+Development is driven by [mise](https://mise.jdx.dev/) for tool versions and [Task](https://taskfile.dev/) for commands. `mise install` provisions Go, `hk`, `golangci-lint`, and `staticcheck` pinned to the versions in `mise.toml`.
 
 ```bash
-task setup
+mise install        # install pinned tools
+task setup          # tidy modules and install git hooks
 task test
 task test:integration
 task lint
 task build
 task ci
 ```
+
+Git hooks are managed by [hk](https://github.com/jdx/hk). `task setup` runs `hk install --mise` so pre-commit lint/format and commit-msg conventional-commit checks are wired against the mise-managed tools.
 
 `task run -- ps` forwards arguments to `go run .`.
 

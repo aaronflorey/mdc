@@ -1,0 +1,54 @@
+[tools]
+go = "1.25.12"
+hk = "latest"
+"go:honnef.co/go/tools/cmd/staticcheck" = "v0.6.1"
+"go:github.com/golangci/golangci-lint/cmd/golangci-lint" = "v1.63.4"
+
+[tasks.setup]
+description = "Install dev tools and git hooks"
+run = "go mod tidy && hk install --mise"
+
+[tasks.run]
+description = "Run mdc with arguments"
+run = "go run . {{.CLI_ARGS}}"
+
+[tasks.lint]
+description = "Format, vet, and lint the codebase"
+run = [
+  "go fmt ./...",
+  "go vet ./...",
+  "golangci-lint run ./...",
+  "staticcheck ./...",
+]
+
+[tasks.test]
+description = "Run unit tests"
+run = "go test ./..."
+
+[tasks."test:integration"]
+description = "Run Docker-backed integration tests"
+run = "go test -tags=integration ./..."
+
+[tasks."test:smoke"]
+description = "Run end-to-end smoke tests"
+run = "go test -tags=smoke -v -timeout 30s ./..."
+
+[tasks.build]
+description = "Build the mdc binary"
+run = "mkdir -p dist && GOOS=linux GOARCH=amd64 go build -o dist/mdc-linux-amd64 ./"
+
+[tasks.ci]
+description = "Run lint and unit tests"
+depends = ["lint", "test"]
+
+[tasks.check]
+description = "Run hk checks across the tree"
+run = "hk check --all"
+
+[tasks.fix]
+description = "Run hk auto-fixers"
+run = "hk fix"
+
+[tasks."release:snapshot"]
+description = "Produce a local GoReleaser snapshot"
+run = "goreleaser release --snapshot --clean"

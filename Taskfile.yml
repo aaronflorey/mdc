@@ -4,7 +4,7 @@ tasks:
   setup:
     cmds:
       - go mod tidy
-      - task hooks:install
+      - hk install --mise
 
   run:
     cmds:
@@ -37,10 +37,6 @@ tasks:
     cmds:
       - task lint
       - task test
-
-  hooks:install:
-    cmds:
-      - go run github.com/evilmartians/lefthook@v1.7.22 install
 
   release:snapshot:
     cmds:

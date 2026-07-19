@@ -1,9 +1,0 @@
-commit-msg:
-  commands:
-    cocogitto:
-      run: cog verify --file {1}
-
-pre-commit:
-  commands:
-    test:
-      run: go test ./...
