@@ -108,7 +108,7 @@ func main() {
 func runCLI(ctx context.Context, stdout io.Writer, stderr io.Writer, argv []string, runner composeRunner) int {
 	opts, composeArgs, nextAction, err := parseArgs(argv)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		printUsage(stderr)
 		return 2
 	}
@@ -118,23 +118,23 @@ func runCLI(ctx context.Context, stdout io.Writer, stderr io.Writer, argv []stri
 		printUsage(stdout)
 		return 0
 	case actionVersion:
-		fmt.Fprintf(stdout, "%s %s\n", commandName, versionString())
+		_, _ = fmt.Fprintf(stdout, "%s %s\n", commandName, versionString())
 		return 0
 	}
 
 	workingDir, err := os.Getwd()
 	if err != nil {
-		fmt.Fprintf(stderr, "resolve working directory: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "resolve working directory: %v\n", err)
 		return 1
 	}
 
 	targets, err := discoverTargets(workingDir, opts.depth)
 	if err != nil {
-		fmt.Fprintf(stderr, "discover compose files: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "discover compose files: %v\n", err)
 		return 1
 	}
 	if len(targets) == 0 {
-		fmt.Fprintln(stderr, "no compose files found in the current directory tree")
+		_, _ = fmt.Fprintln(stderr, "no compose files found in the current directory tree")
 		return 1
 	}
 
@@ -149,7 +149,7 @@ func runCLI(ctx context.Context, stdout io.Writer, stderr io.Writer, argv []stri
 
 	mode, err := outputModeForArgs(composeArgs, opts.jobs, len(targets))
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 2
 	}
 
@@ -266,18 +266,18 @@ func parseNonNegativeInt(raw string, name string) (int, error) {
 }
 
 func printUsage(w io.Writer) {
-	fmt.Fprintf(w, "%s runs docker compose across multiple compose projects in the current tree.\n\n", commandName)
-	fmt.Fprintf(w, "Usage:\n  %s [mdc flags] <docker-compose args...>\n  %s --help\n  %s --version\n\n", commandName, commandName, commandName)
-	fmt.Fprintln(w, "mdc flags:")
-	fmt.Fprintf(w, "  --depth N          Discovery depth. 0 = current dir only, default %d\n", defaultDepth)
-	fmt.Fprintln(w, "  --jobs N           Max concurrent docker compose commands. 0 = all targets")
-	fmt.Fprintln(w, "  --quiet-targets    Suppress per-target section labels for non-merged output")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Examples:")
-	fmt.Fprintf(w, "  %s ps\n", commandName)
-	fmt.Fprintf(w, "  %s up -d\n", commandName)
-	fmt.Fprintf(w, "  %s --depth 2 pull\n", commandName)
-	fmt.Fprintf(w, "  %s --ansi never ps\n", commandName)
+	_, _ = fmt.Fprintf(w, "%s runs docker compose across multiple compose projects in the current tree.\n\n", commandName)
+	_, _ = fmt.Fprintf(w, "Usage:\n  %s [mdc flags] <docker-compose args...>\n  %s --help\n  %s --version\n\n", commandName, commandName, commandName)
+	_, _ = fmt.Fprintln(w, "mdc flags:")
+	_, _ = fmt.Fprintf(w, "  --depth N          Discovery depth. 0 = current dir only, default %d\n", defaultDepth)
+	_, _ = fmt.Fprintln(w, "  --jobs N           Max concurrent docker compose commands. 0 = all targets")
+	_, _ = fmt.Fprintln(w, "  --quiet-targets    Suppress per-target section labels for non-merged output")
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w, "Examples:")
+	_, _ = fmt.Fprintf(w, "  %s ps\n", commandName)
+	_, _ = fmt.Fprintf(w, "  %s up -d\n", commandName)
+	_, _ = fmt.Fprintf(w, "  %s --depth 2 pull\n", commandName)
+	_, _ = fmt.Fprintf(w, "  %s --ansi never ps\n", commandName)
 }
 
 func versionString() string {
@@ -1078,17 +1078,17 @@ func runPS(ctx context.Context, stdout io.Writer, stderr io.Writer, targets []ta
 	rows, err := mergePSRows(jsonResults)
 	if err == nil {
 		if len(rows) == 0 {
-			fmt.Fprintln(stdout, "No containers found.")
+			_, _ = fmt.Fprintln(stdout, "No containers found.")
 			return 0
 		}
-		fmt.Fprint(stdout, renderPSTable(rows, selectPSRenderStyle(stdout)))
+		_, _ = fmt.Fprint(stdout, renderPSTable(rows, selectPSRenderStyle(stdout)))
 		return 0
 	}
 
 	fallbackResults := executeTargets(ctx, targets, composeArgs, opts.jobs, runner, outputWriters(outputModeBuffered, nil, nil))
 	merged := mergePSText(fallbackResults)
 	if merged != "" {
-		fmt.Fprint(stdout, merged)
+		_, _ = fmt.Fprint(stdout, merged)
 	}
 
 	if failures := failureResults(fallbackResults); len(failures) > 0 {
@@ -1122,11 +1122,11 @@ func runImages(ctx context.Context, stdout io.Writer, stderr io.Writer, targets 
 	}
 
 	if merged, ok := mergeImagesTables(results); ok {
-		fmt.Fprint(stdout, merged)
+		_, _ = fmt.Fprint(stdout, merged)
 		return 0
 	}
 
-	fmt.Fprint(stdout, mergeImagesText(results))
+	_, _ = fmt.Fprint(stdout, mergeImagesText(results))
 	return 0
 }
 
@@ -1730,10 +1730,10 @@ func writeStandardOutput(stdout io.Writer, results []commandResult, quiet bool) 
 		}
 
 		if !first {
-			fmt.Fprintln(stdout)
+			_, _ = fmt.Fprintln(stdout)
 		}
 		first = false
-		fmt.Fprint(stdout, body)
+		_, _ = fmt.Fprint(stdout, body)
 	}
 }
 
@@ -1746,10 +1746,10 @@ func writeBufferedOutput(stdout io.Writer, command string, results []commandResu
 		}
 
 		if !first {
-			fmt.Fprintln(stdout)
+			_, _ = fmt.Fprintln(stdout)
 		}
 		first = false
-		fmt.Fprint(stdout, body)
+		_, _ = fmt.Fprint(stdout, body)
 	}
 }
 
@@ -1822,7 +1822,7 @@ func writeFailureSummary(stderr io.Writer, failures []commandResult) {
 		return
 	}
 
-	fmt.Fprintf(stderr, "%d target(s) failed: %s\n", len(parts), strings.Join(parts, ", "))
+	_, _ = fmt.Fprintf(stderr, "%d target(s) failed: %s\n", len(parts), strings.Join(parts, ", "))
 }
 
 func firstLine(text string) string {
