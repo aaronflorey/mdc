@@ -74,7 +74,7 @@ task ci
 
 ## Development
 
-Development is driven by [mise](https://mise.jdx.dev/) for tool versions and [Task](https://taskfile.dev/) for commands. `mise install` provisions Go, `hk`, `golangci-lint`, and `staticcheck` pinned to the versions in `mise.toml`.
+Development is driven by [mise](https://mise.jdx.dev/) for tool versions and [Task](https://taskfile.dev/) for commands. `mise install` provisions Go, GoReleaser, `hk`, `golangci-lint`, and `staticcheck` pinned to the versions in `mise.toml`.
 
 ```bash
 mise install        # install pinned tools

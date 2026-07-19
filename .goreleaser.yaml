@@ -39,8 +39,10 @@ archives:
 checksum:
   name_template: checksums.txt
 
-brews:
+homebrew_casks:
   - ids: ["mdc"]
+    binaries:
+      - mdc
     commit_author:
       name: github-actions[bot]
       email: 41898282+github-actions[bot]@users.noreply.github.com
@@ -52,10 +54,6 @@ brews:
     homepage: "https://github.com/aaronflorey/mdc"
     description: "Run docker compose across multiple projects"
     license: MIT
-    install: |
-      bin.install "mdc"
-    test: |
-      system "#{bin}/mdc", "--help"
 
 changelog:
   sort: asc
