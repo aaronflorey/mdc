@@ -214,6 +214,16 @@ func TestOutputModeForArgsUsesCommandBehavior(t *testing.T) {
 		{name: "parallel events rejected", args: []string{"events"}, jobs: 0, targets: 2, wantError: "docker compose events is live-streaming; rerun with --jobs 1"},
 		{name: "leading flags events rejected", args: []string{"--ansi", "never", "events"}, jobs: 0, targets: 2, wantError: "docker compose events is live-streaming; rerun with --jobs 1"},
 		{name: "serial events passthrough", args: []string{"events"}, jobs: 1, targets: 2, wantMode: outputModePassthrough},
+		{name: "parallel watch rejected", args: []string{"watch"}, jobs: 0, targets: 2, wantError: "docker compose watch is long-running; rerun with --jobs 1"},
+		{name: "leading flags watch rejected", args: []string{"--ansi", "never", "watch"}, jobs: 0, targets: 2, wantError: "docker compose watch is long-running; rerun with --jobs 1"},
+		{name: "serial watch passthrough", args: []string{"watch"}, jobs: 1, targets: 2, wantMode: outputModePassthrough},
+		{name: "single-target watch passthrough", args: []string{"watch"}, jobs: 0, targets: 1, wantMode: outputModePassthrough},
+		{name: "parallel stats buffers", args: []string{"stats"}, jobs: 0, targets: 2, wantMode: outputModeBuffered},
+		{name: "serial stats passthrough", args: []string{"stats"}, jobs: 1, targets: 2, wantMode: outputModePassthrough},
+		{name: "single-target stats passthrough", args: []string{"stats"}, jobs: 0, targets: 1, wantMode: outputModePassthrough},
+		{name: "parallel top interleaves", args: []string{"top"}, jobs: 0, targets: 2, wantMode: outputModeInterleaved},
+		{name: "serial top passthrough", args: []string{"top"}, jobs: 1, targets: 2, wantMode: outputModePassthrough},
+		{name: "single-target top passthrough", args: []string{"top"}, jobs: 0, targets: 1, wantMode: outputModePassthrough},
 	}
 
 	for _, test := range tests {
@@ -833,6 +843,155 @@ func TestRunCLIPassesThroughNestedImagesArguments(t *testing.T) {
 	}
 	if strings.Join(received, " ") != "exec app images" {
 		t.Fatalf("expected passthrough args, got %v", received)
+	}
+}
+
+func TestShouldMergeVolumes(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "volume ls", args: []string{"volume", "ls"}, want: true},
+		{name: "bare volume defaults to ls", args: []string{"volume"}, want: true},
+		{name: "leading flags", args: []string{"--ansi", "never", "volume", "ls"}, want: true},
+		{name: "volume ls with format flag", args: []string{"volume", "ls", "--format", "json"}, want: true},
+		{name: "volume ls with non-json format", args: []string{"volume", "ls", "--format", "table"}, want: false},
+		{name: "non-ls subcommand", args: []string{"volume", "create", "web_cache"}, want: false},
+		{name: "other command", args: []string{"ps"}, want: false},
+		{name: "nested under exec", args: []string{"exec", "app", "volume", "ls"}, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := shouldMergeVolumes(test.args); got != test.want {
+				t.Fatalf("expected merge=%t, got %t for %v", test.want, got, test.args)
+			}
+		})
+	}
+}
+
+func TestVolumesJSONArgs(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "volume ls", args: []string{"volume", "ls"}, want: "volume ls --format json"},
+		{name: "bare volume", args: []string{"volume"}, want: "volume --format json"},
+		{name: "explicit json format", args: []string{"volume", "ls", "--format", "json"}, want: "volume ls --format json"},
+		{name: "explicit json format equals", args: []string{"volume", "ls", "--format=json"}, want: "volume ls --format=json"},
+		{name: "other command", args: []string{"ps"}, want: "ps"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := volumesJSONArgs(test.args)
+			if strings.Join(got, " ") != test.want {
+				t.Fatalf("expected %q, got %q", test.want, strings.Join(got, " "))
+			}
+		})
+	}
+}
+
+func TestRunCLIMergesVolumesOutput(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() { _ = os.Chdir(wd) }()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	runner := func(_ context.Context, stack target, args []string, _ io.Writer, _ io.Writer) commandResult {
+		if strings.Join(args, " ") != "volume ls --format json" {
+			t.Fatalf("unexpected args: %v", args)
+		}
+		if stack.Label == "." {
+			return commandResult{target: stack, stdout: `[{"Name":"web_cache","Driver":"local","Scope":"local"}]`}
+		}
+		return commandResult{target: stack, stdout: `[{"Name":"db_data","Driver":"local","Scope":"local"}]`}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"volume", "ls"}, runner)
+	if code != 0 {
+		t.Fatalf("expected success, got %d with stderr %q", code, stderr.String())
+	}
+	out := stdout.String()
+	if strings.Count(out, "PROJECT") != 1 {
+		t.Fatalf("expected single header, got %q", out)
+	}
+	if !strings.Contains(out, "web_cache") || !strings.Contains(out, "db_data") {
+		t.Fatalf("expected merged volume rows, got %q", out)
+	}
+	if !regexp.MustCompile(`(?m)^\.\s+web_cache`).MatchString(out) || !regexp.MustCompile(`(?m)^api\s+db_data`).MatchString(out) {
+		t.Fatalf("expected project column with target labels, got %q", out)
+	}
+}
+
+func TestRunCLIVolumesFallsBackToText(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() { _ = os.Chdir(wd) }()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	var (
+		mu    sync.Mutex
+		calls []string
+	)
+	runner := func(_ context.Context, stack target, args []string, _ io.Writer, _ io.Writer) commandResult {
+		mu.Lock()
+		calls = append(calls, stack.Label+":"+strings.Join(args, " "))
+		mu.Unlock()
+		if strings.Join(args, " ") == "volume ls --format json" {
+			return commandResult{target: stack, stderr: "unsupported format", exitCode: 1, err: fmt.Errorf("unsupported format")}
+		}
+		return commandResult{target: stack, stdout: "DRIVER VOLUME NAME\nlocal " + stack.Label + "_cache\n"}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"volume", "ls"}, runner)
+
+	if code != 0 {
+		t.Fatalf("expected success, got %d with stderr %q", code, stderr.String())
+	}
+	if strings.Count(stdout.String(), "DRIVER") != 1 {
+		t.Fatalf("expected deduped fallback header, got %q", stdout.String())
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(calls) != 4 {
+		t.Fatalf("expected json attempt plus fallback for each target, got %v", calls)
+	}
+	expectedCalls := map[string]int{
+		".:volume ls --format json":   1,
+		"api:volume ls --format json": 1,
+		".:volume ls":                 1,
+		"api:volume ls":               1,
+	}
+	for _, call := range calls {
+		expectedCalls[call]--
+	}
+	for call, remaining := range expectedCalls {
+		if remaining != 0 {
+			t.Fatalf("expected call %q exactly once, got %v", call, calls)
+		}
 	}
 }
 
@@ -1492,6 +1651,98 @@ func TestRunCLIHonorsQuietTargetsInBufferedOutput(t *testing.T) {
 	}
 }
 
+func TestRunCLIReportsConfigQuietValidationSummary(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(wd)
+	}()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
+		if strings.Join(args, " ") != "config -q" {
+			t.Fatalf("unexpected args: %v", args)
+		}
+		if stdout != nil || stderr != nil {
+			t.Fatal("expected buffered config output")
+		}
+		if stack.Label == "api" {
+			return commandResult{target: stack, stderr: "invalid network", exitCode: 1, err: fmt.Errorf("invalid network")}
+		}
+		return commandResult{target: stack}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"config", "-q"}, runner)
+
+	if code != 1 {
+		t.Fatalf("expected failure exit code, got %d", code)
+	}
+	output := stdout.String()
+	if !strings.Contains(output, ".\n") || !strings.Contains(output, "api (exit 1)\n") {
+		t.Fatalf("expected plain validation summary, got %q", output)
+	}
+	if strings.Contains(output, "✔") || strings.Contains(output, "✘") {
+		t.Fatalf("expected plain summary for non-TTY stdout, got %q", output)
+	}
+	if !strings.Contains(stderr.String(), "1 target(s) failed: api (invalid network)") {
+		t.Fatalf("expected failure summary, got %q", stderr.String())
+	}
+}
+
+func TestConfigValidationLine(t *testing.T) {
+	tests := []struct {
+		name      string
+		result    commandResult
+		decorated bool
+		want      string
+	}{
+		{name: "plain pass", result: commandResult{target: target{Label: "api"}}, want: "api"},
+		{name: "plain fail", result: commandResult{target: target{Label: "api"}, exitCode: 1}, want: "api (exit 1)"},
+		{name: "decorated pass", result: commandResult{target: target{Label: "api"}}, decorated: true, want: "✔ api"},
+		{name: "decorated fail", result: commandResult{target: target{Label: "api"}, exitCode: 3}, decorated: true, want: "✘ api (exit 3)"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := configValidationLine(test.result, test.decorated); got != test.want {
+				t.Fatalf("expected %q, got %q", test.want, got)
+			}
+		})
+	}
+}
+
+func TestConfigRequestsQuiet(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "short flag", args: []string{"config", "-q"}, want: true},
+		{name: "long flag", args: []string{"config", "--quiet"}, want: true},
+		{name: "flag after other args", args: []string{"config", "--services", "-q"}, want: true},
+		{name: "no quiet flag", args: []string{"config"}, want: false},
+		{name: "quiet after separator ignored", args: []string{"config", "--", "-q"}, want: false},
+		{name: "other command", args: []string{"up", "-d"}, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, index := composeCommand(test.args)
+			if got := configRequestsQuiet(test.args, index); got != test.want {
+				t.Fatalf("expected %t, got %t for %v", test.want, got, test.args)
+			}
+		})
+	}
+}
+
 func TestRunCLISummarizesPullOutput(t *testing.T) {
 	root := t.TempDir()
 	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
@@ -1847,6 +2098,152 @@ func TestRunCLIAllowsSerialEventsPassthrough(t *testing.T) {
 	}
 }
 
+func TestRunCLIRejectsParallelWatchCommands(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(wd)
+	}()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
+		t.Fatal("runner should not be invoked for invalid parallel watch command")
+		return commandResult{}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"watch"}, runner)
+
+	if code != 2 {
+		t.Fatalf("expected usage error, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "docker compose watch is long-running; rerun with --jobs 1") {
+		t.Fatalf("expected long-running command error, got %q", stderr.String())
+	}
+}
+
+func TestRunCLIBuffersParallelStatsWithNoStream(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(wd)
+	}()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	var runnerErr error
+	var runnerErrMu sync.Mutex
+	recordRunnerErr := func(err error) {
+		runnerErrMu.Lock()
+		defer runnerErrMu.Unlock()
+		if runnerErr == nil {
+			runnerErr = err
+		}
+	}
+
+	runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
+		if strings.Join(args, " ") != "stats --no-stream" {
+			recordRunnerErr(fmt.Errorf("unexpected args: %v", args))
+		}
+		if stdout != nil || stderr != nil {
+			recordRunnerErr(fmt.Errorf("expected buffered stats output"))
+		}
+		return commandResult{target: stack, stdout: "CONTAINER ID NAME CPU % MEM %\nweb-1 0.00% 0.00%"}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"stats"}, runner)
+	if runnerErr != nil {
+		t.Fatalf("runner assertion failed: %v", runnerErr)
+	}
+	if code != 0 {
+		t.Fatalf("expected success, got %d with stderr %q", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "[.]\nCONTAINER ID NAME CPU % MEM %\nweb-1 0.00% 0.00%\n") {
+		t.Fatalf("expected root stats section, got %q", output)
+	}
+	if !strings.Contains(output, "[api]\nCONTAINER ID NAME CPU % MEM %\nweb-1 0.00% 0.00%\n") {
+		t.Fatalf("expected api stats section, got %q", output)
+	}
+}
+
+func TestRunCLIPreservesStatsPassthroughForSerialAndSingleTarget(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(wd)
+	}()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		argv []string
+	}{
+		{name: "serial stats", argv: []string{"--jobs", "1", "stats"}},
+		{name: "single target stats", argv: []string{"--depth", "0", "stats"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
+				if strings.Join(args, " ") != "stats" {
+					t.Fatalf("unexpected args: %v", args)
+				}
+				if stdout == nil || stderr == nil {
+					t.Fatal("expected passthrough writers for stats")
+				}
+				if _, err := io.WriteString(stdout, "stats line\n"); err != nil {
+					t.Fatalf("write stdout: %v", err)
+				}
+				return commandResult{target: stack, streamed: true}
+			}
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := runCLI(context.Background(), &stdout, &stderr, tc.argv, runner)
+			if code != 0 {
+				t.Fatalf("expected success, got %d with stderr %q", code, stderr.String())
+			}
+			output := stdout.String()
+			if strings.Contains(output, "[.] stats line") || strings.Contains(output, "[api] stats line") {
+				t.Fatalf("expected passthrough stats output without target prefixes, got %q", output)
+			}
+			if tc.name == "serial stats" && strings.Count(output, "stats line") != 2 {
+				t.Fatalf("expected output from both targets, got %q", output)
+			}
+			if tc.name == "single target stats" && strings.Count(output, "stats line") != 1 {
+				t.Fatalf("expected output from one target, got %q", output)
+			}
+		})
+	}
+}
+
 func TestRunCLIRejectsParallelInteractiveCommands(t *testing.T) {
 	root := t.TempDir()
 	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
@@ -2011,13 +2408,13 @@ func TestRenderPSTableStyledAlignsColumns(t *testing.T) {
 }
 
 func TestSupportsJSONProgress(t *testing.T) {
-	withProgress := []string{"build", "create", "down", "kill", "pause", "pull", "push", "restart", "rm", "run", "scale", "start", "stop", "unpause", "up"}
+	withProgress := []string{"build", "commit", "cp", "create", "down", "export", "kill", "pause", "pull", "publish", "push", "restart", "rm", "run", "scale", "start", "stop", "unpause", "up"}
 	for _, command := range withProgress {
 		if !supportsJSONProgress(command) {
 			t.Fatalf("expected %s to support json progress", command)
 		}
 	}
-	withoutProgress := []string{"attach", "config", "events", "exec", "images", "logs", "ps", "top", "version"}
+	withoutProgress := []string{"attach", "config", "events", "exec", "images", "logs", "ls", "ps", "stats", "top", "version", "volume", "watch"}
 	for _, command := range withoutProgress {
 		if supportsJSONProgress(command) {
 			t.Fatalf("expected %s to not support json progress", command)
@@ -2066,6 +2463,31 @@ func TestInjectJSONProgress(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got := injectJSONProgress(test.args, test.mode)
+			if strings.Join(got, " ") != test.want {
+				t.Fatalf("expected %q, got %q", test.want, strings.Join(got, " "))
+			}
+		})
+	}
+}
+
+func TestInjectStatsNoStream(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		mode outputMode
+		want string
+	}{
+		{name: "buffered stats", args: []string{"stats"}, mode: outputModeBuffered, want: "stats --no-stream"},
+		{name: "buffered stats with existing no-stream", args: []string{"stats", "--no-stream"}, mode: outputModeBuffered, want: "stats --no-stream"},
+		{name: "buffered stats with stream flag", args: []string{"stats", "--stream"}, mode: outputModeBuffered, want: "stats --stream"},
+		{name: "buffered stats with equals no-stream", args: []string{"stats", "--no-stream=true"}, mode: outputModeBuffered, want: "stats --no-stream=true"},
+		{name: "passthrough stats", args: []string{"stats"}, mode: outputModePassthrough, want: "stats"},
+		{name: "leading flags stats", args: []string{"--ansi", "never", "stats"}, mode: outputModeBuffered, want: "--ansi never stats --no-stream"},
+		{name: "non-stats command", args: []string{"up", "-d"}, mode: outputModeBuffered, want: "up -d"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := injectStatsNoStream(test.args, test.mode)
 			if strings.Join(got, " ") != test.want {
 				t.Fatalf("expected %q, got %q", test.want, strings.Join(got, " "))
 			}
@@ -2447,6 +2869,126 @@ func TestRunCLIWarnsOnUnrecognizedComposeFlags(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "unrecognized docker compose flags") {
 		t.Fatalf("expected warning, got %q", stderr.String())
+	}
+}
+
+func TestComposeCommandArgsForGlobalCommandOmitProjectFlags(t *testing.T) {
+	got := composeCommandArgs(target{}, []string{"ls"})
+	if strings.Join(got, " ") != "compose ls" {
+		t.Fatalf("expected compose ls without project flags, got %v", got)
+	}
+}
+
+func TestExecComposeRunsGlobalCommandWithoutProjectFlags(t *testing.T) {
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", binDir, err)
+	}
+
+	scriptPath := filepath.Join(binDir, "docker")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\"\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write %s: %v", scriptPath, err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	result := execCompose(context.Background(), target{}, []string{"ls"}, &stdout, &stderr)
+
+	if result.exitCode != 0 {
+		t.Fatalf("expected success, got %+v", result)
+	}
+	lines := strings.Split(strings.TrimSpace(result.stdout), "\n")
+	if strings.Join(lines, " ") != "compose ls" {
+		t.Fatalf("expected global command args, got %q", result.stdout)
+	}
+}
+
+func TestRunCLIRunsGlobalComposeCommandOnce(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() { _ = os.Chdir(wd) }()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		argv []string
+		want string
+	}{
+		{name: "compose ls runs once", argv: []string{"ls"}, want: "ls"},
+		{name: "compose version after separator runs once", argv: []string{"--", "version"}, want: "version"},
+		{name: "compose version after mdc flag runs once", argv: []string{"--depth", "0", "version"}, want: "version"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var calls int
+			runner := func(_ context.Context, stack target, args []string, _ io.Writer, _ io.Writer) commandResult {
+				calls++
+				if got := strings.Join(args, " "); got != test.want {
+					t.Fatalf("expected args %q, got %q", test.want, got)
+				}
+				if stack.Dir != "" || stack.File != "" {
+					t.Fatalf("expected empty target for global command, got %+v", stack)
+				}
+				return commandResult{stdout: "global output"}
+			}
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := runCLI(context.Background(), &stdout, &stderr, test.argv, runner)
+			if code != 0 {
+				t.Fatalf("expected success, got %d with stderr %q", code, stderr.String())
+			}
+			if calls != 1 {
+				t.Fatalf("expected exactly 1 invocation, got %d", calls)
+			}
+			if !strings.Contains(stdout.String(), "global output") {
+				t.Fatalf("expected passthrough output, got %q", stdout.String())
+			}
+		})
+	}
+}
+
+func TestRunCLIPropagatesGlobalComposeFailure(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() { _ = os.Chdir(wd) }()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	runner := func(_ context.Context, stack target, args []string, _ io.Writer, _ io.Writer) commandResult {
+		if strings.Join(args, " ") != "ls" {
+			t.Fatalf("unexpected args: %v", args)
+		}
+		return commandResult{stderr: "no such project", exitCode: 7, err: fmt.Errorf("no such project")}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"ls"}, runner)
+	if code != 7 {
+		t.Fatalf("expected exit code 7, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "no such project") {
+		t.Fatalf("expected failure output on stderr, got %q", stderr.String())
 	}
 }
 

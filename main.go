@@ -145,14 +145,22 @@ func runCLI(ctx context.Context, stdout io.Writer, stderr io.Writer, argv []stri
 		}
 	}
 
+	if command, _ := composeCommand(composeArgs); command == "ls" || command == "version" {
+		return runGlobalCompose(ctx, stdout, stderr, composeArgs, runner)
+	}
+
 	if shouldMergePS(composeArgs) {
 		return runPS(ctx, stdout, stderr, targets, opts, composeArgs, runner)
 	}
 	if shouldMergeImages(composeArgs) && len(targets) > 1 {
 		return runImages(ctx, stdout, stderr, targets, opts, composeArgs, runner)
 	}
+	if shouldMergeVolumes(composeArgs) && len(targets) > 1 {
+		return runVolumes(ctx, stdout, stderr, targets, opts, composeArgs, runner)
+	}
 
-	command, _ := composeCommand(composeArgs)
+	command, commandIndex := composeCommand(composeArgs)
+	quietConfig := command == "config" && configRequestsQuiet(composeArgs, commandIndex)
 
 	mode, err := outputModeForArgs(composeArgs, opts.jobs, len(targets))
 	if err != nil {
@@ -161,6 +169,7 @@ func runCLI(ctx context.Context, stdout io.Writer, stderr io.Writer, argv []stri
 	}
 
 	composeArgs = injectJSONProgress(composeArgs, mode)
+	composeArgs = injectStatsNoStream(composeArgs, mode)
 
 	writers := outputWriters(mode, stdout, stderr)
 	var liveBoard *liveStatusBoard
@@ -177,7 +186,11 @@ func runCLI(ctx context.Context, stdout io.Writer, stderr io.Writer, argv []stri
 		liveBoard.finish()
 	}
 	if mode == outputModeBuffered {
-		writeBufferedOutput(stdout, command, results, opts.quietTargets)
+		if quietConfig {
+			writeConfigValidationSummary(stdout, results)
+		} else {
+			writeBufferedOutput(stdout, command, results, opts.quietTargets)
+		}
 	} else {
 		writeStandardOutput(stdout, results, opts.quietTargets)
 	}
@@ -905,6 +918,9 @@ func transformProgressLines(text string) string {
 }
 
 func composeCommandArgs(stack target, args []string) []string {
+	if stack.Dir == "" && stack.File == "" {
+		return append([]string{"compose"}, args...)
+	}
 	commandArgs := []string{
 		"compose",
 		"--project-name", targetProjectName(stack),
@@ -913,6 +929,17 @@ func composeCommandArgs(stack target, args []string) []string {
 	}
 	commandArgs = append(commandArgs, args...)
 	return commandArgs
+}
+
+func runGlobalCompose(ctx context.Context, stdout io.Writer, stderr io.Writer, composeArgs []string, runner composeRunner) int {
+	result := runner(ctx, target{}, composeArgs, stdout, stderr)
+	if text := strings.TrimSpace(result.stdout); text != "" {
+		_, _ = fmt.Fprintln(stdout, text)
+	}
+	if text := strings.TrimSpace(result.stderr); text != "" {
+		_, _ = fmt.Fprintln(stderr, text)
+	}
+	return result.exitCode
 }
 
 func targetProjectName(stack target) string {
@@ -1058,6 +1085,20 @@ func outputModeForArgs(args []string, jobs int, targetCount int) (outputMode, er
 		return outputModePassthrough, nil
 	}
 
+	if command == "watch" {
+		if parallel {
+			return outputModeBuffered, fmt.Errorf("docker compose watch is long-running; rerun with --jobs 1")
+		}
+		return outputModePassthrough, nil
+	}
+
+	if command == "stats" {
+		if parallel {
+			return outputModeBuffered, nil
+		}
+		return outputModePassthrough, nil
+	}
+
 	if isInterleavedComposeCommand(command) {
 		if parallel {
 			return outputModeInterleaved, nil
@@ -1077,7 +1118,7 @@ func shouldUseLiveStatusBoard(command string, mode outputMode, stdout io.Writer,
 
 func supportsJSONProgress(command string) bool {
 	switch command {
-	case "build", "create", "down", "kill", "pause", "pull", "push", "restart", "rm", "run", "scale", "start", "stop", "unpause", "up":
+	case "build", "commit", "cp", "create", "down", "export", "kill", "pause", "pull", "publish", "push", "restart", "rm", "run", "scale", "start", "stop", "unpause", "up":
 		return true
 	default:
 		return false
@@ -1113,6 +1154,24 @@ func injectJSONProgress(args []string, mode outputMode) []string {
 	return updated
 }
 
+func injectStatsNoStream(args []string, mode outputMode) []string {
+	command, commandIndex := composeCommand(args)
+	if command != "stats" || mode != outputModeBuffered {
+		return args
+	}
+	for _, arg := range args[commandIndex+1:] {
+		switch composeGlobalFlagName(arg) {
+		case "--no-stream", "--stream":
+			return args
+		}
+	}
+	updated := make([]string, 0, len(args)+1)
+	updated = append(updated, args[:commandIndex+1]...)
+	updated = append(updated, "--no-stream")
+	updated = append(updated, args[commandIndex+1:]...)
+	return updated
+}
+
 func parallelTargetCount(jobs int, targetCount int) int {
 	if jobs <= 0 || jobs > targetCount {
 		return targetCount
@@ -1131,7 +1190,7 @@ func isInteractiveComposeCommand(command string) bool {
 
 func isInterleavedComposeCommand(command string) bool {
 	switch command {
-	case "create", "down", "pull", "restart", "start", "stop", "up":
+	case "create", "down", "pull", "restart", "start", "stop", "top", "up":
 		return true
 	default:
 		return false
@@ -1158,6 +1217,24 @@ func upCommandRequestsDetach(args []string, commandIndex int) bool {
 			value, _ := strings.CutPrefix(arg, "--detach=")
 			parsed, err := strconv.ParseBool(value)
 			return err == nil && parsed
+		}
+	}
+
+	return false
+}
+
+func configRequestsQuiet(args []string, commandIndex int) bool {
+	if commandIndex < 0 {
+		return false
+	}
+
+	for i := commandIndex + 1; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--":
+			return false
+		case arg == "-q" || arg == "--quiet":
+			return true
 		}
 	}
 
@@ -1213,6 +1290,29 @@ func shouldMergePS(args []string) bool {
 func shouldMergeImages(args []string) bool {
 	command, _ := composeCommand(args)
 	return command == "images"
+}
+
+func shouldMergeVolumes(args []string) bool {
+	command, commandIndex := composeCommand(args)
+	if command != "volume" {
+		return false
+	}
+	for i := commandIndex + 1; i < len(args); i++ {
+		arg := args[i]
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		if arg != "ls" {
+			return false
+		}
+		break
+	}
+
+	format, hasFormat := psFormat(args, commandIndex)
+	if !hasFormat {
+		return true
+	}
+	return strings.EqualFold(format, "json")
 }
 
 func psCommandIndex(args []string) int {
@@ -1362,6 +1462,108 @@ func runImages(ctx context.Context, stdout io.Writer, stderr io.Writer, targets 
 
 	_, _ = fmt.Fprint(stdout, mergeImagesText(results))
 	return 0
+}
+
+func runVolumes(ctx context.Context, stdout io.Writer, stderr io.Writer, targets []target, opts options, composeArgs []string, runner composeRunner) int {
+	jsonArgs := volumesJSONArgs(composeArgs)
+	jsonResults := executeTargets(ctx, targets, jsonArgs, opts.jobs, runner, outputWriters(outputModeBuffered, nil, nil))
+	if rows, ok := mergeVolumeRows(jsonResults); ok {
+		if len(rows) == 0 {
+			_, _ = fmt.Fprintln(stdout, "No volumes found.")
+			return 0
+		}
+		_, _ = fmt.Fprint(stdout, renderVolumeTable(rows))
+		return 0
+	}
+
+	if slices.Equal(jsonArgs, composeArgs) {
+		if failures := failureResults(jsonResults); len(failures) > 0 {
+			if merged := mergeImagesText(jsonResults); merged != "" {
+				_, _ = fmt.Fprint(stdout, merged)
+			}
+			writeFailureSummary(stderr, failures)
+			return failures[0].exitCode
+		}
+	}
+
+	fallbackResults := executeTargets(ctx, targets, composeArgs, opts.jobs, runner, outputWriters(outputModeBuffered, nil, nil))
+	if merged := mergeImagesText(fallbackResults); merged != "" {
+		_, _ = fmt.Fprint(stdout, merged)
+	}
+
+	if failures := failureResults(fallbackResults); len(failures) > 0 {
+		writeFailureSummary(stderr, failures)
+		return failures[0].exitCode
+	}
+
+	return 0
+}
+
+func volumesJSONArgs(args []string) []string {
+	command, commandIndex := composeCommand(args)
+	if command != "volume" {
+		return append([]string(nil), args...)
+	}
+
+	insertAt := commandIndex + 1
+	for insertAt < len(args) && strings.HasPrefix(args[insertAt], "-") {
+		insertAt++
+	}
+	if insertAt < len(args) {
+		insertAt++
+	}
+
+	if format, hasFormat := psFormat(args, commandIndex); hasFormat && strings.EqualFold(format, "json") {
+		return append([]string(nil), args...)
+	}
+
+	updated := make([]string, 0, len(args)+2)
+	updated = append(updated, args[:insertAt]...)
+	updated = append(updated, "--format", "json")
+	updated = append(updated, args[insertAt:]...)
+	return updated
+}
+
+func mergeVolumeRows(results []commandResult) ([][]string, bool) {
+	merged := make(map[string][]string)
+	for _, result := range results {
+		if result.err != nil {
+			return nil, false
+		}
+		entries, err := parsePSJSON(result.stdout)
+		if err != nil {
+			return nil, false
+		}
+		for _, entry := range entries {
+			name := firstNonEmpty(entry, "Name")
+			if name == "" {
+				continue
+			}
+			merged[result.target.Label+"\x00"+name] = []string{
+				result.target.Label,
+				name,
+				firstNonEmpty(entry, "Driver"),
+				firstNonEmpty(entry, "Scope"),
+			}
+		}
+	}
+
+	rows := make([][]string, 0, len(merged))
+	for _, row := range merged {
+		rows = append(rows, row)
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i][0] == rows[j][0] {
+			return rows[i][1] < rows[j][1]
+		}
+		return rows[i][0] < rows[j][0]
+	})
+
+	return rows, true
+}
+
+func renderVolumeTable(rows [][]string) string {
+	return renderTable([]string{"PROJECT", "NAME", "DRIVER", "SCOPE"}, rows)
 }
 
 func psJSONArgs(args []string) []string {
@@ -2037,6 +2239,28 @@ func failureResults(results []commandResult) []commandResult {
 		}
 	}
 	return failures
+}
+
+func writeConfigValidationSummary(stdout io.Writer, results []commandResult) {
+	decorated := terminalWriter(stdout) != nil
+	for _, result := range results {
+		_, _ = fmt.Fprintln(stdout, configValidationLine(result, decorated))
+	}
+}
+
+func configValidationLine(result commandResult, decorated bool) string {
+	text := result.target.Label
+	if result.exitCode != 0 {
+		text = fmt.Sprintf("%s (exit %d)", text, result.exitCode)
+	}
+	if !decorated {
+		return text
+	}
+	mark := "✔"
+	if result.exitCode != 0 {
+		mark = "✘"
+	}
+	return mark + " " + text
 }
 
 func writeFailureSummary(stderr io.Writer, failures []commandResult) {
