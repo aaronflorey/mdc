@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -138,6 +139,12 @@ func runCLI(ctx context.Context, stdout io.Writer, stderr io.Writer, argv []stri
 		return 1
 	}
 
+	if len(composeArgs) > 0 {
+		if _, idx := composeCommand(composeArgs); idx < 0 {
+			_, _ = fmt.Fprintf(stderr, "mdc: warning: unrecognized docker compose flags in %q; merged ps/images tables, progress detection, and output mode detection are disabled for this run\n", strings.Join(composeArgs, " "))
+		}
+	}
+
 	if shouldMergePS(composeArgs) {
 		return runPS(ctx, stdout, stderr, targets, opts, composeArgs, runner)
 	}
@@ -152,6 +159,8 @@ func runCLI(ctx context.Context, stdout io.Writer, stderr io.Writer, argv []stri
 		_, _ = fmt.Fprintln(stderr, err)
 		return 2
 	}
+
+	composeArgs = injectJSONProgress(composeArgs, mode)
 
 	writers := outputWriters(mode, stdout, stderr)
 	var liveBoard *liveStatusBoard
@@ -171,6 +180,11 @@ func runCLI(ctx context.Context, stdout io.Writer, stderr io.Writer, argv []stri
 		writeBufferedOutput(stdout, command, results, opts.quietTargets)
 	} else {
 		writeStandardOutput(stdout, results, opts.quietTargets)
+	}
+
+	if ctx.Err() != nil {
+		_, _ = fmt.Fprintf(stderr, "mdc: %v\n", ctx.Err())
+		return 130
 	}
 
 	if failures := failureResults(results); len(failures) > 0 {
@@ -210,7 +224,7 @@ func parseArgs(args []string) (options, []string, action, error) {
 		case arg == "--quiet-targets":
 			opts.quietTargets = true
 		case strings.HasPrefix(arg, "--depth="):
-			depth, err := parsePositiveInt(strings.TrimPrefix(arg, "--depth="), "depth")
+			depth, err := parseNonNegativeInt(strings.TrimPrefix(arg, "--depth="), "depth")
 			if err != nil {
 				return opts, nil, actionRun, err
 			}
@@ -219,7 +233,7 @@ func parseArgs(args []string) (options, []string, action, error) {
 			if i+1 >= len(args) {
 				return opts, nil, actionRun, errors.New("missing value for --depth")
 			}
-			depth, err := parsePositiveInt(args[i+1], "depth")
+			depth, err := parseNonNegativeInt(args[i+1], "depth")
 			if err != nil {
 				return opts, nil, actionRun, err
 			}
@@ -247,14 +261,6 @@ func parseArgs(args []string) (options, []string, action, error) {
 	}
 
 	return opts, nil, actionRun, errors.New("expected docker compose arguments")
-}
-
-func parsePositiveInt(raw string, name string) (int, error) {
-	value, err := strconv.Atoi(raw)
-	if err != nil || value < 0 {
-		return 0, fmt.Errorf("%s must be a non-negative integer", name)
-	}
-	return value, nil
 }
 
 func parseNonNegativeInt(raw string, name string) (int, error) {
@@ -360,7 +366,11 @@ func collectDirectories(root string, maxDepth int) ([]string, error) {
 
 		entries, err := os.ReadDir(current.path)
 		if err != nil {
-			return nil, fmt.Errorf("read directory %q: %w", current.path, err)
+			if current.path == root {
+				return nil, fmt.Errorf("read directory %q: %w", current.path, err)
+			}
+			fmt.Fprintf(os.Stderr, "mdc: warning: skipping unreadable directory %q: %v\n", current.path, err)
+			continue
 		}
 
 		for _, entry := range entries {
@@ -389,6 +399,10 @@ func canonicalComposeFile(dir string) (string, bool, error) {
 			return candidate, true, nil
 		}
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			if os.IsPermission(err) {
+				fmt.Fprintf(os.Stderr, "mdc: warning: skipping unreadable directory %q: %v\n", dir, err)
+				return "", false, nil
+			}
 			return "", false, fmt.Errorf("stat compose file %q: %w", candidate, err)
 		}
 	}
@@ -441,6 +455,13 @@ func execCompose(ctx context.Context, stack target, args []string, stdout io.Wri
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			exitCode = exitErr.ExitCode()
+			if exitCode < 0 {
+				// Signal-killed child: ExitCode() is -1, and os.Exit(-1)
+				// surfaces as 255 in the shell. Collapse to 1; per-signal
+				// 128+n would need syscall.WaitStatus, which is not
+				// portable to the windows builds in .goreleaser.yaml.
+				exitCode = 1
+			}
 		}
 	}
 
@@ -546,7 +567,11 @@ func (w *linePrefixWriter) Write(p []byte) (int, error) {
 
 		lineEnd += start
 		if lineEnd > start {
-			if _, err := w.dest.Write(p[start:lineEnd]); err != nil {
+			if event, ok := parseProgressLine(string(p[start:lineEnd])); ok {
+				if _, err := io.WriteString(w.dest, progressEventLine(event)); err != nil {
+					return len(p), err
+				}
+			} else if _, err := w.dest.Write(p[start:lineEnd]); err != nil {
 				return len(p), err
 			}
 		}
@@ -564,23 +589,33 @@ func (w *linePrefixWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+const maxResourceRows = 8
+
+type targetRows struct {
+	order []string
+	rows  map[string]string
+}
+
 type liveStatusBoard struct {
-	dest       io.Writer
-	targets    []target
-	statuses   map[string]string
-	labelWidth int
-	rendered   bool
-	mu         sync.Mutex
+	dest          io.Writer
+	targets       []target
+	resources     map[string]*targetRows
+	fallback      map[string]string
+	labelWidth    int
+	rendered      bool
+	renderedLines int
+	mu            sync.Mutex
 }
 
 func newLiveStatusBoard(dest io.Writer, targets []target) *liveStatusBoard {
 	board := &liveStatusBoard{
-		dest:     dest,
-		targets:  append([]target(nil), targets...),
-		statuses: make(map[string]string, len(targets)),
+		dest:      dest,
+		targets:   append([]target(nil), targets...),
+		resources: make(map[string]*targetRows),
+		fallback:  make(map[string]string, len(targets)),
 	}
 	for _, stack := range targets {
-		board.statuses[stack.Label] = "waiting"
+		board.fallback[stack.Label] = "waiting"
 		board.labelWidth = max(board.labelWidth, len("["+stack.Label+"]"))
 	}
 	return board
@@ -603,7 +638,37 @@ func (b *liveStatusBoard) update(label string, status string) {
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.statuses[label] = status
+	b.fallback[label] = status
+	if rows := b.resources[label]; rows != nil && len(rows.order) > 0 {
+		return
+	}
+	b.renderLocked(true)
+}
+
+func (b *liveStatusBoard) updateResource(label string, event progressEvent) {
+	if event.ParentID != "" {
+		return
+	}
+	if event.ID == "" {
+		b.update(label, progressEventStatus(event))
+		return
+	}
+	status := progressEventStatus(event)
+	if percent := progressPercent(event); percent > 0 {
+		status = fmt.Sprintf("%s (%d%%)", status, percent)
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	rows := b.resources[label]
+	if rows == nil {
+		rows = &targetRows{rows: make(map[string]string)}
+		b.resources[label] = rows
+	}
+	if _, ok := rows.rows[event.ID]; !ok {
+		rows.order = append(rows.order, event.ID)
+	}
+	rows.rows[event.ID] = status
 	b.renderLocked(true)
 }
 
@@ -613,22 +678,65 @@ func (b *liveStatusBoard) finish() {
 	if !b.rendered {
 		return
 	}
-	_, _ = fmt.Fprintf(b.dest, "\x1b[%dA", len(b.targets))
-	for range b.targets {
+	_, _ = fmt.Fprintf(b.dest, "\x1b[%dA", b.renderedLines)
+	for range b.renderedLines {
 		_, _ = io.WriteString(b.dest, "\r\x1b[2K\n")
 	}
-	_, _ = fmt.Fprintf(b.dest, "\x1b[%dA", len(b.targets))
+	_, _ = fmt.Fprintf(b.dest, "\x1b[%dA", b.renderedLines)
 	b.rendered = false
+	b.renderedLines = 0
 }
 
 func (b *liveStatusBoard) renderLocked(moveUp bool) {
 	if moveUp && b.rendered {
-		_, _ = fmt.Fprintf(b.dest, "\x1b[%dA", len(b.targets))
+		_, _ = fmt.Fprintf(b.dest, "\x1b[%dA", b.renderedLines)
 	}
+	lines := 0
 	for _, stack := range b.targets {
-		_, _ = fmt.Fprintf(b.dest, "\r\x1b[2K%-*s %s\n", b.labelWidth, "["+stack.Label+"]", b.statuses[stack.Label])
+		label := "[" + stack.Label + "]"
+		rows := b.resources[stack.Label]
+		if rows == nil || len(rows.order) == 0 {
+			_, _ = fmt.Fprintf(b.dest, "\r\x1b[2K%-*s %s\n", b.labelWidth, label, b.fallback[stack.Label])
+			lines++
+			continue
+		}
+		order := rows.order
+		hidden := 0
+		if len(order) > maxResourceRows {
+			hidden = len(order) - maxResourceRows
+			order = order[len(order)-maxResourceRows:]
+		}
+		for _, id := range order {
+			_, _ = fmt.Fprintf(b.dest, "\r\x1b[2K%-*s %s %s\n", b.labelWidth, label, shortResourceID(id), rows.rows[id])
+			lines++
+		}
+		if hidden > 0 {
+			_, _ = fmt.Fprintf(b.dest, "\r\x1b[2K%-*s +%d more\n", b.labelWidth, label, hidden)
+			lines++
+		}
 	}
 	b.rendered = true
+	b.renderedLines = lines
+}
+
+func shortResourceID(id string) string {
+	if rest, ok := strings.CutPrefix(id, "Image "); ok {
+		return rest
+	}
+	if rest, ok := strings.CutPrefix(id, "Container "); ok {
+		return rest
+	}
+	return id
+}
+
+func progressPercent(event progressEvent) int {
+	if event.Percent > 0 {
+		return event.Percent
+	}
+	if event.Current > 0 && event.Total > 0 {
+		return event.Current * 100 / event.Total
+	}
+	return 0
 }
 
 type liveStatusWriter struct {
@@ -687,6 +795,10 @@ func (w *liveStatusWriter) flushLineLocked() {
 	if line == "" {
 		return
 	}
+	if event, ok := parseProgressLine(line); ok {
+		w.board.updateResource(w.target.Label, event)
+		return
+	}
 	w.board.update(w.target.Label, summarizeComposeStatusLine(line))
 }
 
@@ -723,6 +835,73 @@ func summarizeComposeStatusLine(line string) string {
 	}
 
 	return line
+}
+
+type progressEvent struct {
+	ID       string `json:"id"`
+	ParentID string `json:"parent_id"`
+	Status   string `json:"status"`
+	Text     string `json:"text"`
+	Details  string `json:"details"`
+	Current  int    `json:"current"`
+	Total    int    `json:"total"`
+	Percent  int    `json:"percent"`
+}
+
+func parseProgressLine(line string) (progressEvent, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return progressEvent{}, false
+	}
+	var event progressEvent
+	if err := json.Unmarshal([]byte(line), &event); err != nil {
+		return progressEvent{}, false
+	}
+	if event.ID == "" && event.Text == "" {
+		return progressEvent{}, false
+	}
+	return event, true
+}
+
+func progressEventStatus(event progressEvent) string {
+	text := event.Text
+	if text == "" {
+		text = event.ID
+	}
+	switch event.Status {
+	case "Error":
+		return fmt.Sprintf("Error: %s (%s)", text, event.ID)
+	case "Warning":
+		return fmt.Sprintf("Warning: %s (%s)", text, event.ID)
+	default:
+		return text
+	}
+}
+
+func progressEventLine(event progressEvent) string {
+	text := event.Text
+	if text == "" {
+		text = event.ID
+	}
+	switch event.Status {
+	case "Error", "Warning":
+		return fmt.Sprintf("%s: %s (%s)", event.Status, event.ID, text)
+	default:
+		if event.ID == "" {
+			return text
+		}
+		return event.ID + ": " + text
+	}
+}
+
+func transformProgressLines(text string) string {
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		if event, ok := parseProgressLine(line); ok {
+			lines[i] = progressEventLine(event)
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func composeCommandArgs(stack target, args []string) []string {
@@ -890,10 +1069,48 @@ func outputModeForArgs(args []string, jobs int, targetCount int) (outputMode, er
 }
 
 func shouldUseLiveStatusBoard(command string, mode outputMode, stdout io.Writer, targets []target) bool {
-	if command != "up" || mode != outputModeBuffered || len(targets) < 2 {
+	if !supportsJSONProgress(command) || mode != outputModeBuffered || len(targets) < 2 {
 		return false
 	}
 	return terminalWriter(stdout) != nil
+}
+
+func supportsJSONProgress(command string) bool {
+	switch command {
+	case "build", "create", "down", "kill", "pause", "pull", "push", "restart", "rm", "run", "scale", "start", "stop", "unpause", "up":
+		return true
+	default:
+		return false
+	}
+}
+
+func userSpecifiedProgress(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if composeGlobalFlagTakesValue(arg) {
+			if composeGlobalFlagName(arg) == "--progress" {
+				return true
+			}
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "-") && composeGlobalFlagName(arg) == "--progress" {
+			return true
+		}
+	}
+	return false
+}
+
+func injectJSONProgress(args []string, mode outputMode) []string {
+	command, commandIndex := composeCommand(args)
+	if mode == outputModePassthrough || !supportsJSONProgress(command) || userSpecifiedProgress(args) {
+		return args
+	}
+	updated := make([]string, 0, len(args)+1)
+	updated = append(updated, args[:commandIndex]...)
+	updated = append(updated, "--progress=json")
+	updated = append(updated, args[commandIndex:]...)
+	return updated
 }
 
 func parallelTargetCount(jobs int, targetCount int) int {
@@ -1074,7 +1291,8 @@ func psFormat(args []string, psIndex int) (string, bool) {
 }
 
 func runPS(ctx context.Context, stdout io.Writer, stderr io.Writer, targets []target, opts options, composeArgs []string, runner composeRunner) int {
-	jsonResults := executeTargets(ctx, targets, psJSONArgs(composeArgs), opts.jobs, runner, outputWriters(outputModeBuffered, nil, nil))
+	jsonArgs := psJSONArgs(composeArgs)
+	jsonResults := executeTargets(ctx, targets, jsonArgs, opts.jobs, runner, outputWriters(outputModeBuffered, nil, nil))
 	rows, err := mergePSRows(jsonResults)
 	if err == nil {
 		if len(rows) == 0 {
@@ -1083,6 +1301,22 @@ func runPS(ctx context.Context, stdout io.Writer, stderr io.Writer, targets []ta
 		}
 		_, _ = fmt.Fprint(stdout, renderPSTable(rows, selectPSRenderStyle(stdout)))
 		return 0
+	}
+
+	// If the user explicitly passed --format json, jsonArgs are identical to
+	// composeArgs: re-running would execute the exact same failing command.
+	// Report the failure instead of retrying. (When mdc injected --format
+	// json, the fallback below is still the compatibility path for docker
+	// versions that reject it.)
+	if slices.Equal(jsonArgs, composeArgs) {
+		if failures := failureResults(jsonResults); len(failures) > 0 {
+			merged := mergePSText(jsonResults)
+			if merged != "" {
+				_, _ = fmt.Fprint(stdout, merged)
+			}
+			writeFailureSummary(stderr, failures)
+			return failures[0].exitCode
+		}
 	}
 
 	fallbackResults := executeTargets(ctx, targets, composeArgs, opts.jobs, runner, outputWriters(outputModeBuffered, nil, nil))
@@ -1785,7 +2019,7 @@ func targetOutput(result commandResult, quiet bool) string {
 		out.WriteByte('\n')
 	}
 	if trimmedStderr != "" {
-		out.WriteString(trimmedStderr)
+		out.WriteString(transformProgressLines(trimmedStderr))
 		out.WriteByte('\n')
 	}
 	if trimmedStdout == "" && trimmedStderr == "" && result.exitCode != 0 {
@@ -1808,7 +2042,7 @@ func failureResults(results []commandResult) []commandResult {
 func writeFailureSummary(stderr io.Writer, failures []commandResult) {
 	parts := make([]string, 0, len(failures))
 	for _, failure := range failures {
-		detail := firstLine(strings.TrimSpace(failure.stderr))
+		detail := firstLine(transformProgressLines(strings.TrimSpace(failure.stderr)))
 		if detail == "" {
 			detail = firstLine(strings.TrimSpace(failure.stdout))
 		}
@@ -1831,11 +2065,4 @@ func firstLine(text string) string {
 	}
 	lines := strings.Split(text, "\n")
 	return lines[0]
-}
-
-func max(a int, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

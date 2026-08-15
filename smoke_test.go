@@ -24,13 +24,13 @@ func TestTTYLiveStatusBoard(t *testing.T) {
 
 	fakeDocker := filepath.Join(root, "docker")
 	fakeDockerScript := `#!/bin/sh
-printf 'Image busybox Pulling\r'
+printf '%s\r\n' '{"id":"Image nginx","status":"Working","text":"Pulling","percent":30}' >&2
 sleep 0.05
-printf 'sha256deadbeef Downloading 10MB\r'
+printf '%s\r\n' '{"id":"Container fake-svc-1","status":"Working","text":"Creating"}' >&2
 sleep 0.05
-printf 'Image busybox Pulled\n'
-printf 'Container fake-svc Starting\n'
-printf 'Container fake-svc Started\n'
+printf '%s\r\n' '{"id":"Container fake-svc-1","status":"Warning","text":"restarting"}' >&2
+sleep 0.05
+printf '%s\r\n' '{"id":"Container fake-svc-1","status":"Done","text":"Started"}' >&2
 `
 	if err := os.WriteFile(fakeDocker, []byte(fakeDockerScript), 0o755); err != nil {
 		t.Fatalf("write fake docker: %v", err)
@@ -109,8 +109,20 @@ printf 'Container fake-svc Started\n'
 		t.Errorf("missing ANSI escape sequences (live board not rendered):\n%s", out)
 	}
 
-	if !strings.Contains(out, "pulling") {
-		t.Errorf("missing intermediate pull status:\n%s", out)
+	if !strings.Contains(out, "Creating") {
+		t.Errorf("missing JSON progress create status:\n%s", out)
+	}
+
+	if !strings.Contains(out, "Pulling (30%)") {
+		t.Errorf("missing percent-bearing pull status:\n%s", out)
+	}
+
+	if !strings.Contains(out, "Warning: restarting (Container fake-svc-1)") {
+		t.Errorf("missing JSON progress warning status:\n%s", out)
+	}
+
+	if !strings.Contains(out, "Started") {
+		t.Errorf("missing JSON progress done status:\n%s", out)
 	}
 
 	if !strings.Contains(out, "[svc1] up complete") {

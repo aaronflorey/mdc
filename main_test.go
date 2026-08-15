@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -271,7 +272,7 @@ func TestLiveStatusWriterBuffersRawOutputAndTracksLatestStatus(t *testing.T) {
 	if got := writer.bufferedOutput(); got != input {
 		t.Fatalf("expected raw output %q, got %q", input, got)
 	}
-	if got := board.statuses["api"]; got != "api-web-1 Started" {
+	if got := board.fallback["api"]; got != "api-web-1 Started" {
 		t.Fatalf("expected latest status to be tracked, got %q", got)
 	}
 	if !strings.Contains(dest.String(), "Running 2 compose projects...") {
@@ -465,7 +466,7 @@ func TestRunCLIReportsNonZeroWhenAnyTargetFails(t *testing.T) {
 	}
 
 	runner := func(_ context.Context, stack target, args []string, _ io.Writer, _ io.Writer) commandResult {
-		if strings.Join(args, " ") != "up -d" {
+		if strings.Join(args, " ") != "--progress=json up -d" {
 			t.Fatalf("unexpected args: %v", args)
 		}
 		if stack.Label == "api" {
@@ -510,7 +511,7 @@ func TestRunCLIPropagatesContextCancellation(t *testing.T) {
 
 	var started atomic.Int32
 	runner := func(ctx context.Context, stack target, args []string, _ io.Writer, _ io.Writer) commandResult {
-		if strings.Join(args, " ") != "up -d" {
+		if strings.Join(args, " ") != "--progress=json up -d" {
 			t.Fatalf("unexpected args: %v", args)
 		}
 		if started.Add(1) == 2 {
@@ -898,7 +899,7 @@ func TestRunCLIInterleavesTopLevelParallelAttachedUp(t *testing.T) {
 	}
 
 	runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
-		if strings.Join(args, " ") != "up" {
+		if strings.Join(args, " ") != "--progress=json up" {
 			recordRunnerErr(fmt.Errorf("unexpected args: %v", args))
 		}
 		if stdout == nil || stderr == nil {
@@ -956,7 +957,7 @@ func TestRunCLIBuffersParallelDetachedUpOutput(t *testing.T) {
 	}
 
 	runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
-		if strings.Join(args, " ") != "up -d" {
+		if strings.Join(args, " ") != "--progress=json up -d" {
 			recordRunnerErr(fmt.Errorf("unexpected args: %v", args))
 		}
 		if stdout != nil || stderr != nil {
@@ -1014,7 +1015,7 @@ func TestRunCLIKeepsUpFailureDetailsInBufferedMode(t *testing.T) {
 	}
 
 	runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
-		if strings.Join(args, " ") != "up -d" {
+		if strings.Join(args, " ") != "--progress=json up -d" {
 			recordRunnerErr(fmt.Errorf("unexpected args: %v", args))
 		}
 		if stdout != nil || stderr != nil {
@@ -1375,7 +1376,7 @@ func TestRunCLIBuffersOnlyParallelBuildOutput(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
-				if strings.Join(args, " ") != "build" {
+				if got := strings.Join(args, " "); got != "build" && got != "--progress=json build" {
 					t.Fatalf("unexpected args: %v", args)
 				}
 				isBuffered := stdout == nil && stderr == nil
@@ -1459,7 +1460,7 @@ func TestRunCLIHonorsQuietTargetsInBufferedOutput(t *testing.T) {
 				switch strings.Join(args, " ") {
 				case "config":
 					return commandResult{target: stack, stdout: fmt.Sprintf("config for %s", stack.Label)}
-				case "build":
+				case "build", "--progress=json build":
 					return commandResult{target: stack, stdout: "noisy build output"}
 				default:
 					return commandResult{target: stack, exitCode: 1, stderr: "unexpected args"}
@@ -1508,7 +1509,7 @@ func TestRunCLISummarizesPullOutput(t *testing.T) {
 	}
 
 	runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
-		if strings.Join(args, " ") != "pull" {
+		if strings.Join(args, " ") != "--progress=json pull" {
 			t.Fatalf("unexpected args: %v", args)
 		}
 		if stdout != nil || stderr != nil {
@@ -1556,7 +1557,7 @@ func TestRunCLISuppressesSuccessfulParallelBuildOutput(t *testing.T) {
 	}
 
 	runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
-		if strings.Join(args, " ") != "build" {
+		if strings.Join(args, " ") != "--progress=json build" {
 			t.Fatalf("unexpected args: %v", args)
 		}
 		if stdout != nil || stderr != nil {
@@ -1596,7 +1597,7 @@ func TestRunCLIUsesBuildBufferedPathWithLeadingComposeFlags(t *testing.T) {
 	}
 
 	runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
-		if strings.Join(args, " ") != "--ansi never build" {
+		if strings.Join(args, " ") != "--ansi never --progress=json build" {
 			t.Fatalf("unexpected args: %v", args)
 		}
 		if stdout != nil || stderr != nil {
@@ -2007,4 +2008,480 @@ func TestRenderPSTableStyledAlignsColumns(t *testing.T) {
 	}
 
 	renderPSTable(rows, psRenderStyleStyled)
+}
+
+func TestSupportsJSONProgress(t *testing.T) {
+	withProgress := []string{"build", "create", "down", "kill", "pause", "pull", "push", "restart", "rm", "run", "scale", "start", "stop", "unpause", "up"}
+	for _, command := range withProgress {
+		if !supportsJSONProgress(command) {
+			t.Fatalf("expected %s to support json progress", command)
+		}
+	}
+	withoutProgress := []string{"attach", "config", "events", "exec", "images", "logs", "ps", "top", "version"}
+	for _, command := range withoutProgress {
+		if supportsJSONProgress(command) {
+			t.Fatalf("expected %s to not support json progress", command)
+		}
+	}
+}
+
+func TestUserSpecifiedProgress(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "no progress flag", args: []string{"up", "-d"}, want: false},
+		{name: "separate progress flag", args: []string{"up", "-d", "--progress", "tty"}, want: true},
+		{name: "equals progress flag", args: []string{"up", "--progress=plain"}, want: true},
+		{name: "leading global progress flag", args: []string{"--progress", "tty", "up", "-d"}, want: true},
+		{name: "other flag with value", args: []string{"up", "--ansi", "never", "-d"}, want: false},
+		{name: "leading global flags without progress", args: []string{"--ansi", "never", "up", "-d"}, want: false},
+		{name: "progress on pull", args: []string{"pull", "--progress", "tty"}, want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := userSpecifiedProgress(test.args); got != test.want {
+				t.Fatalf("expected %t, got %t for %v", test.want, got, test.args)
+			}
+		})
+	}
+}
+
+func TestInjectJSONProgress(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		mode outputMode
+		want string
+	}{
+		{name: "buffered up", args: []string{"up", "-d"}, mode: outputModeBuffered, want: "--progress=json up -d"},
+		{name: "interleaved up", args: []string{"up"}, mode: outputModeInterleaved, want: "--progress=json up"},
+		{name: "passthrough up", args: []string{"up"}, mode: outputModePassthrough, want: "up"},
+		{name: "user progress respected", args: []string{"up", "--progress", "tty"}, mode: outputModeBuffered, want: "up --progress tty"},
+		{name: "pull", args: []string{"pull"}, mode: outputModeBuffered, want: "--progress=json pull"},
+		{name: "unsupported command", args: []string{"logs", "--tail", "5"}, mode: outputModeBuffered, want: "logs --tail 5"},
+		{name: "leading flags", args: []string{"--ansi", "never", "build"}, mode: outputModeBuffered, want: "--ansi never --progress=json build"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := injectJSONProgress(test.args, test.mode)
+			if strings.Join(got, " ") != test.want {
+				t.Fatalf("expected %q, got %q", test.want, strings.Join(got, " "))
+			}
+		})
+	}
+}
+
+func TestParseProgressLine(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want progressEvent
+		ok   bool
+	}{
+		{
+			name: "full event",
+			line: `{"id":"Container example-web-1","parent_id":"","status":"Working","text":"Creating","details":"","current":0,"total":0,"percent":0}`,
+			want: progressEvent{ID: "Container example-web-1", Status: "Working", Text: "Creating"},
+			ok:   true,
+		},
+		{name: "id and text", line: `{"id":"x","text":"y"}`, want: progressEvent{ID: "x", Text: "y"}, ok: true},
+		{name: "id only", line: `{"id":"x"}`, want: progressEvent{ID: "x"}, ok: true},
+		{name: "text only", line: `{"text":"y"}`, want: progressEvent{Text: "y"}, ok: true},
+		{name: "status only", line: `{"status":"Done"}`, ok: false},
+		{name: "not json", line: "Container fake-svc Starting", ok: false},
+		{name: "empty", line: "", ok: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := parseProgressLine(test.line)
+			if ok != test.ok {
+				t.Fatalf("expected ok=%t, got %t for %q", test.ok, ok, test.line)
+			}
+			if ok && got != test.want {
+				t.Fatalf("expected %+v, got %+v", test.want, got)
+			}
+		})
+	}
+}
+
+func TestLiveStatusWriterParsesProgressEvents(t *testing.T) {
+	var dest bytes.Buffer
+	board := newLiveStatusBoard(&dest, []target{{Label: "."}, {Label: "api"}})
+	board.start()
+
+	writer := &liveStatusWriter{board: board, target: target{Label: "api"}}
+	if _, err := io.WriteString(writer, `{"id":"Container api-web-1","status":"Working","text":"Creating"}`+"\n"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	writer.finishStreamingOutput()
+	rows := board.resources["api"]
+	if rows == nil || rows.rows["Container api-web-1"] != "Creating" {
+		t.Fatalf("expected Creating resource row, got %+v", rows)
+	}
+
+	if _, err := io.WriteString(writer, `{"id":"Container api-web-1","status":"Warning","text":"healthcheck failed"}`+"\n"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	writer.finishStreamingOutput()
+	if rows.rows["Container api-web-1"] != "Warning: healthcheck failed (Container api-web-1)" {
+		t.Fatalf("expected warning resource row, got %+v", rows)
+	}
+
+	if _, err := io.WriteString(writer, "Container api-web-1 Started\n"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	writer.finishStreamingOutput()
+	if got := board.fallback["api"]; got != "api-web-1 Started" {
+		t.Fatalf("expected fallback status, got %q", got)
+	}
+}
+
+func TestLiveStatusBoardRendersStableResourceRows(t *testing.T) {
+	var dest bytes.Buffer
+	board := newLiveStatusBoard(&dest, []target{{Label: "api"}, {Label: "web"}})
+	board.start()
+
+	api := &liveStatusWriter{board: board, target: target{Label: "api"}}
+	web := &liveStatusWriter{board: board, target: target{Label: "web"}}
+
+	writeEvent := func(w *liveStatusWriter, line string) {
+		t.Helper()
+		if _, err := io.WriteString(w, line+"\n"); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+
+	writeEvent(api, `{"id":"Image nginx","status":"Working","text":"Pulling","percent":40}`)
+	writeEvent(api, `{"id":"Container api-web-1","status":"Working","text":"Creating"}`)
+	writeEvent(web, `{"id":"Image busybox","status":"Working","text":"Pulling","current":50,"total":200}`)
+	writeEvent(web, `{"id":"Container web-svc-1","status":"Working","text":"Starting"}`)
+	writeEvent(web, `{"id":"Container web-svc-1","status":"Warning","text":"restarting"}`)
+	writeEvent(web, `{"id":"layer-ab12","parent_id":"Image busybox","status":"Working","text":"Downloading"}`)
+	// Out-of-order update: the first-seen image refreshes after later rows exist.
+	writeEvent(api, `{"id":"Image nginx","status":"Working","text":"Extracting","percent":75}`)
+
+	if rows := board.resources["web"]; rows != nil && len(rows.order) != 2 {
+		t.Fatalf("expected 2 web resource rows, got %+v", rows)
+	}
+	if len(board.resources["api"].order) != 2 {
+		t.Fatalf("expected 2 api resource rows, got %+v", board.resources["api"].order)
+	}
+
+	wantFrame := "" +
+		"\r\x1b[2K[api] nginx Extracting (75%)\n" +
+		"\r\x1b[2K[api] api-web-1 Creating\n" +
+		"\r\x1b[2K[web] busybox Pulling (25%)\n" +
+		"\r\x1b[2K[web] web-svc-1 Warning: restarting (Container web-svc-1)\n"
+	if !strings.HasSuffix(dest.String(), "\x1b[4A"+wantFrame) {
+		t.Fatalf("unexpected final frame:\n%q", dest.String())
+	}
+
+	board.finish()
+	wantFinish := "\x1b[4A" + strings.Repeat("\r\x1b[2K\n", 4) + "\x1b[4A"
+	if !strings.HasSuffix(dest.String(), wantFinish) {
+		t.Fatalf("finish did not clear the rendered lines:\n%q", dest.String())
+	}
+}
+
+func TestLiveStatusBoardFallbackLineDoesNotCreateResourceRows(t *testing.T) {
+	var dest bytes.Buffer
+	board := newLiveStatusBoard(&dest, []target{{Label: "api"}})
+	board.start()
+
+	writer := &liveStatusWriter{board: board, target: target{Label: "api"}}
+	if _, err := io.WriteString(writer, "Container api-web-1 Started\n"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	writer.finishStreamingOutput()
+
+	if got := board.fallback["api"]; got != "api-web-1 Started" {
+		t.Fatalf("expected fallback status, got %q", got)
+	}
+	if rows := board.resources["api"]; rows != nil && len(rows.order) != 0 {
+		t.Fatalf("expected no resource rows, got %+v", rows)
+	}
+	if !strings.Contains(dest.String(), "[api] api-web-1 Started") {
+		t.Fatalf("expected fallback row rendered, got %q", dest.String())
+	}
+}
+
+func TestProgressPercent(t *testing.T) {
+	tests := []struct {
+		name  string
+		event progressEvent
+		want  int
+	}{
+		{name: "explicit percent wins", event: progressEvent{Percent: 40, Current: 1, Total: 10}, want: 40},
+		{name: "derived from current and total", event: progressEvent{Current: 50, Total: 200}, want: 25},
+		{name: "truncates", event: progressEvent{Current: 1, Total: 3}, want: 33},
+		{name: "zero without data", event: progressEvent{}, want: 0},
+		{name: "current without total", event: progressEvent{Current: 5}, want: 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := progressPercent(test.event); got != test.want {
+				t.Fatalf("expected %d, got %d", test.want, got)
+			}
+		})
+	}
+}
+
+func TestLiveStatusBoardCapsResourceRows(t *testing.T) {
+	var dest bytes.Buffer
+	board := newLiveStatusBoard(&dest, []target{{Label: "api"}})
+	board.start()
+
+	writer := &liveStatusWriter{board: board, target: target{Label: "api"}}
+	for i := 0; i < 10; i++ {
+		line := fmt.Sprintf(`{"id":"Image img-%d","status":"Working","text":"Pulling %d"}`, i, i)
+		if _, err := io.WriteString(writer, line+"\n"); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	writer.finishStreamingOutput()
+
+	if len(board.resources["api"].order) != 10 {
+		t.Fatalf("expected all 10 rows tracked, got %d", len(board.resources["api"].order))
+	}
+
+	wantFrame := ""
+	for i := 2; i < 10; i++ {
+		wantFrame += fmt.Sprintf("\r\x1b[2K[api] img-%d Pulling %d\n", i, i)
+	}
+	wantFrame += "\r\x1b[2K[api] +2 more\n"
+	if !strings.HasSuffix(dest.String(), "\x1b[9A"+wantFrame) {
+		t.Fatalf("unexpected capped frame:\n%q", dest.String())
+	}
+}
+
+func TestLinePrefixWriterRendersProgressEvents(t *testing.T) {
+	var dest bytes.Buffer
+	var mu sync.Mutex
+	writer := &linePrefixWriter{dest: &dest, prefix: "[api] ", mu: &mu, atLineStart: true}
+
+	input := `{"id":"Container api-web-1","status":"Working","text":"Creating"}` + "\n" +
+		"plain line\n" +
+		`{"id":"Container api-web-1","status":"Error","text":"boom"}` + "\n"
+	if _, err := io.WriteString(writer, input); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	writer.finishStreamingOutput()
+
+	want := "[api] Container api-web-1: Creating\n[api] plain line\n[api] Error: Container api-web-1 (boom)\n"
+	if got := dest.String(); got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
+func TestTargetOutputTransformsProgressLinesInStderr(t *testing.T) {
+	result := commandResult{
+		target:   target{Label: "api"},
+		stdout:   `{"id":"x","text":"stdout json kept"}`,
+		stderr:   "{\"id\":\"Container api-web-1\",\"status\":\"Error\",\"text\":\"boom\"}\nplain error",
+		exitCode: 1,
+	}
+	got := targetOutput(result, false)
+	if !strings.Contains(got, `{"id":"x","text":"stdout json kept"}`) {
+		t.Fatalf("expected stdout left verbatim, got %q", got)
+	}
+	if !strings.Contains(got, "Error: Container api-web-1 (boom)\nplain error") {
+		t.Fatalf("expected stderr progress lines re-rendered, got %q", got)
+	}
+}
+
+func TestWriteFailureSummaryTransformsProgressLines(t *testing.T) {
+	var stderr bytes.Buffer
+	writeFailureSummary(&stderr, []commandResult{
+		{target: target{Label: "api"}, stderr: "{\"id\":\"Container api-web-1\",\"status\":\"Error\",\"text\":\"boom\"}\nmore", exitCode: 1},
+	})
+	if got := stderr.String(); !strings.Contains(got, "api (Error: Container api-web-1 (boom))") {
+		t.Fatalf("expected transformed failure summary, got %q", got)
+	}
+}
+
+func TestDiscoverTargetsSkipsUnreadableSubdirectories(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+	locked := filepath.Join(root, "locked")
+	if err := os.Mkdir(locked, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(locked, "compose.yaml"))
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(locked, 0o755) // let TempDir cleanup succeed
+	})
+
+	// depth 1 exercises the canonicalComposeFile stat path (Path B):
+	// the walker never ReadDirs `locked`, but it does stat files inside it.
+	targets, err := discoverTargets(root, 1)
+	if err != nil {
+		t.Fatalf("expected unreadable subdir to be skipped at depth 1, got error: %v", err)
+	}
+
+	labels := make([]string, 0, len(targets))
+	for _, tg := range targets {
+		labels = append(labels, tg.Label)
+	}
+	sort.Strings(labels)
+	if strings.Join(labels, ",") != ".,api" {
+		t.Fatalf("expected targets [., api], got %v", labels)
+	}
+
+	// depth 2 exercises the collectDirectories ReadDir path (Path A).
+	targets, err = discoverTargets(root, 2)
+	if err != nil {
+		t.Fatalf("expected unreadable subdir to be skipped at depth 2, got error: %v", err)
+	}
+	labels = labels[:0]
+	for _, tg := range targets {
+		labels = append(labels, tg.Label)
+	}
+	sort.Strings(labels)
+	if strings.Join(labels, ",") != ".,api" {
+		t.Fatalf("expected targets [., api] at depth 2, got %v", labels)
+	}
+}
+
+func TestRunCLIInterruptedRunSkipsFailureSummary(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(wd)
+	}()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	runner := func(ctx context.Context, stack target, args []string, _ io.Writer, _ io.Writer) commandResult {
+		cancel()
+		<-ctx.Done()
+		// exitCode -1 = what a signal-killed docker produces via ExitCode().
+		return commandResult{target: stack, exitCode: -1, err: ctx.Err()}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(ctx, &stdout, &stderr, []string{"up", "-d"}, runner)
+
+	if code != 130 {
+		t.Fatalf("expected exit code 130, got %d", code)
+	}
+	if strings.Contains(stderr.String(), "target(s) failed") {
+		t.Fatalf("expected no failure summary after interrupt, got %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "context canceled") {
+		t.Fatalf("expected interruption notice, got %q", stderr.String())
+	}
+}
+
+func TestExecComposeClampsSignaledExitCode(t *testing.T) {
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	targetDir := filepath.Join(root, "stack")
+	composeFile := filepath.Join(targetDir, "compose.yaml")
+
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", binDir, err)
+	}
+	mustWriteFile(t, composeFile)
+
+	scriptPath := filepath.Join(binDir, "docker")
+	script := "#!/bin/sh\nkill -TERM $$\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write %s: %v", scriptPath, err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	result := execCompose(context.Background(), target{Dir: targetDir, File: composeFile, Label: "."}, []string{"up", "-d"}, &stdout, &stderr)
+
+	if result.exitCode != 1 {
+		t.Fatalf("expected clamped exit code 1 for signaled process, got %d", result.exitCode)
+	}
+}
+
+func TestRunCLIWarnsOnUnrecognizedComposeFlags(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(wd)
+	}()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	runner := func(_ context.Context, stack target, args []string, _ io.Writer, _ io.Writer) commandResult {
+		return commandResult{target: stack, stdout: "ok", exitCode: 0}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"--no-such-flag", "ps"}, runner)
+
+	if code != 0 {
+		t.Fatalf("expected success, got %d with stderr %q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "unrecognized docker compose flags") {
+		t.Fatalf("expected warning, got %q", stderr.String())
+	}
+}
+
+func TestRunPSReportsExplicitJSONFailureWithoutRerun(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(wd)
+	}()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	var calls atomic.Int32
+	runner := func(_ context.Context, stack target, args []string, _ io.Writer, _ io.Writer) commandResult {
+		calls.Add(1)
+		return commandResult{target: stack, stderr: "boom", exitCode: 5, err: fmt.Errorf("boom")}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"ps", "--format", "json"}, runner)
+
+	if code != 5 {
+		t.Fatalf("expected exit code 5, got %d", code)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("expected exactly 1 execution, got %d", calls.Load())
+	}
+	if !strings.Contains(stderr.String(), "boom") {
+		t.Fatalf("expected failure detail, got %q", stderr.String())
+	}
 }

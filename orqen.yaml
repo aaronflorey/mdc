@@ -7,12 +7,10 @@ scope: project
 skills:
     - source: https://github.com/jeffallan/claude-skills
       skills:
-        - cli-developer
-
         - golang-pro
+        - cli-developer
         - code-documenter
         - architecture-designer
-        - code-documenter
         - code-reviewer
         - security-reviewer
         - test-master
