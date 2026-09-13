@@ -21,6 +21,7 @@ import (
 	"syscall"
 
 	"github.com/aaronflorey/mdc/internal/version"
+	"golang.org/x/term"
 )
 
 const (
@@ -532,11 +533,26 @@ func terminalWriter(w io.Writer) *os.File {
 	if err != nil {
 		return nil
 	}
-	if info.Mode()&os.ModeCharDevice == 0 {
+	if info.Mode()&os.ModeCharDevice == 0 || !term.IsTerminal(int(file.Fd())) {
 		return nil
 	}
 
 	return file
+}
+
+const fallbackTerminalColumns = 80
+
+func terminalColumns(w io.Writer) int {
+	file := terminalWriter(w)
+	if file == nil {
+		return fallbackTerminalColumns
+	}
+
+	columns, _, err := term.GetSize(int(file.Fd()))
+	if err != nil || columns <= 0 {
+		return fallbackTerminalColumns
+	}
+	return columns
 }
 
 type linePrefixWriter struct {
@@ -608,33 +624,33 @@ func (w *linePrefixWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-const maxResourceRows = 8
-
-type targetRows struct {
-	order []string
-	rows  map[string]string
-}
-
 type liveStatusBoard struct {
 	dest          io.Writer
 	targets       []target
-	resources     map[string]*targetRows
-	fallback      map[string]string
+	statuses      map[string]string
 	labelWidth    int
+	width         int
 	rendered      bool
 	renderedLines int
 	mu            sync.Mutex
 }
 
 func newLiveStatusBoard(dest io.Writer, targets []target) *liveStatusBoard {
+	return newLiveStatusBoardWithWidth(dest, targets, terminalColumns(dest))
+}
+
+func newLiveStatusBoardWithWidth(dest io.Writer, targets []target, width int) *liveStatusBoard {
 	board := &liveStatusBoard{
-		dest:      dest,
-		targets:   append([]target(nil), targets...),
-		resources: make(map[string]*targetRows),
-		fallback:  make(map[string]string, len(targets)),
+		dest:     dest,
+		targets:  append([]target(nil), targets...),
+		statuses: make(map[string]string, len(targets)),
+		width:    width,
+	}
+	if board.width <= 0 {
+		board.width = fallbackTerminalColumns
 	}
 	for _, stack := range targets {
-		board.fallback[stack.Label] = "waiting"
+		board.statuses[stack.Label] = "waiting"
 		board.labelWidth = max(board.labelWidth, len("["+stack.Label+"]"))
 	}
 	return board
@@ -646,49 +662,28 @@ func (b *liveStatusBoard) start() {
 	if b.rendered {
 		return
 	}
-	_, _ = fmt.Fprintf(b.dest, "Running %d compose projects...\n", len(b.targets))
+	header := fmt.Sprintf("Running %d compose projects...", len(b.targets))
+	_, _ = fmt.Fprintf(b.dest, "%s\n", truncateToWidth(header, b.width))
 	b.renderLocked(false)
 }
 
 func (b *liveStatusBoard) update(label string, status string) {
-	if strings.TrimSpace(status) == "" {
+	status = compactStatus(status)
+	if status == "" {
 		return
 	}
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.fallback[label] = status
-	if rows := b.resources[label]; rows != nil && len(rows.order) > 0 {
-		return
-	}
+	b.statuses[label] = status
 	b.renderLocked(true)
 }
 
-func (b *liveStatusBoard) updateResource(label string, event progressEvent) {
+func (b *liveStatusBoard) updateProgress(label string, event progressEvent) {
 	if event.ParentID != "" {
 		return
 	}
-	if event.ID == "" {
-		b.update(label, progressEventStatus(event))
-		return
-	}
-	status := progressEventStatus(event)
-	if percent := progressPercent(event); percent > 0 {
-		status = fmt.Sprintf("%s (%d%%)", status, percent)
-	}
-
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	rows := b.resources[label]
-	if rows == nil {
-		rows = &targetRows{rows: make(map[string]string)}
-		b.resources[label] = rows
-	}
-	if _, ok := rows.rows[event.ID]; !ok {
-		rows.order = append(rows.order, event.ID)
-	}
-	rows.rows[event.ID] = status
-	b.renderLocked(true)
+	b.update(label, progressEventActivity(event))
 }
 
 func (b *liveStatusBoard) finish() {
@@ -710,42 +705,13 @@ func (b *liveStatusBoard) renderLocked(moveUp bool) {
 	if moveUp && b.rendered {
 		_, _ = fmt.Fprintf(b.dest, "\x1b[%dA", b.renderedLines)
 	}
-	lines := 0
 	for _, stack := range b.targets {
 		label := "[" + stack.Label + "]"
-		rows := b.resources[stack.Label]
-		if rows == nil || len(rows.order) == 0 {
-			_, _ = fmt.Fprintf(b.dest, "\r\x1b[2K%-*s %s\n", b.labelWidth, label, b.fallback[stack.Label])
-			lines++
-			continue
-		}
-		order := rows.order
-		hidden := 0
-		if len(order) > maxResourceRows {
-			hidden = len(order) - maxResourceRows
-			order = order[len(order)-maxResourceRows:]
-		}
-		for _, id := range order {
-			_, _ = fmt.Fprintf(b.dest, "\r\x1b[2K%-*s %s %s\n", b.labelWidth, label, shortResourceID(id), rows.rows[id])
-			lines++
-		}
-		if hidden > 0 {
-			_, _ = fmt.Fprintf(b.dest, "\r\x1b[2K%-*s +%d more\n", b.labelWidth, label, hidden)
-			lines++
-		}
+		row := fmt.Sprintf("%-*s %s", b.labelWidth, label, b.statuses[stack.Label])
+		_, _ = fmt.Fprintf(b.dest, "\r\x1b[2K%s\n", truncateToWidth(row, b.width))
 	}
 	b.rendered = true
-	b.renderedLines = lines
-}
-
-func shortResourceID(id string) string {
-	if rest, ok := strings.CutPrefix(id, "Image "); ok {
-		return rest
-	}
-	if rest, ok := strings.CutPrefix(id, "Container "); ok {
-		return rest
-	}
-	return id
+	b.renderedLines = len(b.targets)
 }
 
 func progressPercent(event progressEvent) int {
@@ -815,7 +781,7 @@ func (w *liveStatusWriter) flushLineLocked() {
 		return
 	}
 	if event, ok := parseProgressLine(line); ok {
-		w.board.updateResource(w.target.Label, event)
+		w.board.updateProgress(w.target.Label, event)
 		return
 	}
 	if message, ok := parseComposeLogLine(line); ok {
@@ -834,10 +800,10 @@ func summarizeComposeStatusLine(line string) string {
 	if strings.HasPrefix(line, "Image ") {
 		rest := strings.TrimSpace(strings.TrimPrefix(line, "Image "))
 		if image, _, ok := strings.Cut(rest, " Pulling"); ok {
-			return "pulling " + strings.TrimSpace(image)
+			return "pulling " + humanizeImageReference(strings.TrimSpace(image))
 		}
 		if image, _, ok := strings.Cut(rest, " Pulled"); ok {
-			return "pulled " + strings.TrimSpace(image)
+			return "pulled " + humanizeImageReference(strings.TrimSpace(image))
 		}
 	}
 
@@ -858,6 +824,22 @@ func summarizeComposeStatusLine(line string) string {
 	}
 
 	return line
+}
+
+func compactStatus(status string) string {
+	return strings.Join(strings.Fields(status), " ")
+}
+
+func truncateToWidth(text string, width int) string {
+	if width <= 0 || displayWidth(text) <= width {
+		return text
+	}
+	if width == 1 {
+		return "…"
+	}
+
+	runes := []rune(text)
+	return string(runes[:width-1]) + "…"
 }
 
 type progressEvent struct {
@@ -938,16 +920,56 @@ func normalizeProgressLine(line string) (string, bool) {
 func progressEventStatus(event progressEvent) string {
 	text := event.Text
 	if text == "" {
-		text = event.ID
+		text = liveProgressResource(event.ID)
 	}
+	displayID := humanizeProgressID(event.ID)
 	switch event.Status {
 	case "Error":
-		return fmt.Sprintf("Error: %s (%s)", text, event.ID)
+		return fmt.Sprintf("Error: %s (%s)", text, displayID)
 	case "Warning":
-		return fmt.Sprintf("Warning: %s (%s)", text, event.ID)
+		return fmt.Sprintf("Warning: %s (%s)", text, displayID)
 	default:
 		return text
 	}
+}
+
+func progressEventActivity(event progressEvent) string {
+	resource := liveProgressResource(event.ID)
+	status := progressEventStatus(event)
+	if percent := progressPercent(event); percent > 0 {
+		status = fmt.Sprintf("%s (%d%%)", status, percent)
+	}
+	if resource == "" || resource == status {
+		return status
+	}
+	if status == "" {
+		return resource
+	}
+	return resource + " " + status
+}
+
+func liveProgressResource(id string) string {
+	if rest, ok := strings.CutPrefix(id, "Image "); ok {
+		return humanizeImageReference(rest)
+	}
+	if rest, ok := strings.CutPrefix(id, "Container "); ok {
+		return rest
+	}
+	return id
+}
+
+func humanizeProgressID(id string) string {
+	if rest, ok := strings.CutPrefix(id, "Image "); ok {
+		return "Image " + humanizeImageReference(rest)
+	}
+	return id
+}
+
+func humanizeImageReference(image string) string {
+	if repository, _, ok := strings.Cut(image, "@sha256:"); ok {
+		return repository
+	}
+	return image
 }
 
 func progressEventLine(event progressEvent) string {

@@ -282,7 +282,7 @@ func TestLiveStatusWriterBuffersRawOutputAndTracksLatestStatus(t *testing.T) {
 	if got := writer.bufferedOutput(); got != input {
 		t.Fatalf("expected raw output %q, got %q", input, got)
 	}
-	if got := board.fallback["api"]; got != "api-web-1 Started" {
+	if got := board.statuses["api"]; got != "api-web-1 Started" {
 		t.Fatalf("expected latest status to be tracked, got %q", got)
 	}
 	if !strings.Contains(dest.String(), "Running 2 compose projects...") {
@@ -2555,29 +2555,28 @@ func TestLiveStatusWriterParsesProgressEvents(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	writer.finishStreamingOutput()
-	rows := board.resources["api"]
-	if rows == nil || rows.rows["Container api-web-1"] != "Creating" {
-		t.Fatalf("expected Creating resource row, got %+v", rows)
+	if got := board.statuses["api"]; got != "api-web-1 Creating" {
+		t.Fatalf("expected Creating status, got %q", got)
 	}
 
 	if _, err := io.WriteString(writer, `{"id":"Container api-web-1","status":"Warning","text":"healthcheck failed"}`+"\n"); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	writer.finishStreamingOutput()
-	if rows.rows["Container api-web-1"] != "Warning: healthcheck failed (Container api-web-1)" {
-		t.Fatalf("expected warning resource row, got %+v", rows)
+	if got := board.statuses["api"]; got != "api-web-1 Warning: healthcheck failed (Container api-web-1)" {
+		t.Fatalf("expected warning status, got %q", got)
 	}
 
 	if _, err := io.WriteString(writer, "Container api-web-1 Started\n"); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	writer.finishStreamingOutput()
-	if got := board.fallback["api"]; got != "api-web-1 Started" {
-		t.Fatalf("expected fallback status, got %q", got)
+	if got := board.statuses["api"]; got != "api-web-1 Started" {
+		t.Fatalf("expected latest status, got %q", got)
 	}
 }
 
-func TestLiveStatusBoardRendersStableResourceRows(t *testing.T) {
+func TestLiveStatusBoardRendersOneStatusRowPerTarget(t *testing.T) {
 	var dest bytes.Buffer
 	board := newLiveStatusBoard(&dest, []target{{Label: "api"}, {Label: "web"}})
 	board.start()
@@ -2598,33 +2597,31 @@ func TestLiveStatusBoardRendersStableResourceRows(t *testing.T) {
 	writeEvent(web, `{"id":"Container web-svc-1","status":"Working","text":"Starting"}`)
 	writeEvent(web, `{"id":"Container web-svc-1","status":"Warning","text":"restarting"}`)
 	writeEvent(web, `{"id":"layer-ab12","parent_id":"Image busybox","status":"Working","text":"Downloading"}`)
-	// Out-of-order update: the first-seen image refreshes after later rows exist.
+	// A later top-level event replaces the target's earlier activity.
 	writeEvent(api, `{"id":"Image nginx","status":"Working","text":"Extracting","percent":75}`)
 
-	if rows := board.resources["web"]; rows != nil && len(rows.order) != 2 {
-		t.Fatalf("expected 2 web resource rows, got %+v", rows)
+	if got := board.statuses["api"]; got != "nginx Extracting (75%)" {
+		t.Fatalf("expected latest api status, got %q", got)
 	}
-	if len(board.resources["api"].order) != 2 {
-		t.Fatalf("expected 2 api resource rows, got %+v", board.resources["api"].order)
+	if got := board.statuses["web"]; got != "web-svc-1 Warning: restarting (Container web-svc-1)" {
+		t.Fatalf("expected latest web status, got %q", got)
 	}
 
 	wantFrame := "" +
 		"\r\x1b[2K[api] nginx Extracting (75%)\n" +
-		"\r\x1b[2K[api] api-web-1 Creating\n" +
-		"\r\x1b[2K[web] busybox Pulling (25%)\n" +
 		"\r\x1b[2K[web] web-svc-1 Warning: restarting (Container web-svc-1)\n"
-	if !strings.HasSuffix(dest.String(), "\x1b[4A"+wantFrame) {
+	if !strings.HasSuffix(dest.String(), "\x1b[2A"+wantFrame) {
 		t.Fatalf("unexpected final frame:\n%q", dest.String())
 	}
 
 	board.finish()
-	wantFinish := "\x1b[4A" + strings.Repeat("\r\x1b[2K\n", 4) + "\x1b[4A"
+	wantFinish := "\x1b[2A" + strings.Repeat("\r\x1b[2K\n", 2) + "\x1b[2A"
 	if !strings.HasSuffix(dest.String(), wantFinish) {
 		t.Fatalf("finish did not clear the rendered lines:\n%q", dest.String())
 	}
 }
 
-func TestLiveStatusBoardFallbackLineDoesNotCreateResourceRows(t *testing.T) {
+func TestLiveStatusBoardUpdatesStatusFromPlainComposeLine(t *testing.T) {
 	var dest bytes.Buffer
 	board := newLiveStatusBoard(&dest, []target{{Label: "api"}})
 	board.start()
@@ -2635,14 +2632,11 @@ func TestLiveStatusBoardFallbackLineDoesNotCreateResourceRows(t *testing.T) {
 	}
 	writer.finishStreamingOutput()
 
-	if got := board.fallback["api"]; got != "api-web-1 Started" {
-		t.Fatalf("expected fallback status, got %q", got)
-	}
-	if rows := board.resources["api"]; rows != nil && len(rows.order) != 0 {
-		t.Fatalf("expected no resource rows, got %+v", rows)
+	if got := board.statuses["api"]; got != "api-web-1 Started" {
+		t.Fatalf("expected latest status, got %q", got)
 	}
 	if !strings.Contains(dest.String(), "[api] api-web-1 Started") {
-		t.Fatalf("expected fallback row rendered, got %q", dest.String())
+		t.Fatalf("expected status row rendered, got %q", dest.String())
 	}
 }
 
@@ -2667,31 +2661,52 @@ func TestProgressPercent(t *testing.T) {
 	}
 }
 
-func TestLiveStatusBoardCapsResourceRows(t *testing.T) {
+func TestLiveStatusBoardTruncatesRowsToTerminalWidth(t *testing.T) {
 	var dest bytes.Buffer
-	board := newLiveStatusBoard(&dest, []target{{Label: "api"}})
+	board := newLiveStatusBoardWithWidth(&dest, []target{{Label: "api"}, {Label: "very-long-target"}}, 24)
+	board.start()
+	board.update("api", "a status that is much longer than the terminal width")
+	board.update("very-long-target", "another status that must not wrap")
+
+	if board.renderedLines != 2 {
+		t.Fatalf("expected one rendered line per target, got %d", board.renderedLines)
+	}
+	frameStart := strings.LastIndex(dest.String(), "\x1b[2A")
+	if frameStart < 0 {
+		t.Fatalf("expected a rendered update frame, got %q", dest.String())
+	}
+	frame := dest.String()[frameStart+len("\x1b[2A"):]
+	rows := strings.Split(strings.TrimSuffix(frame, "\n"), "\n")
+	if len(rows) != 2 {
+		t.Fatalf("expected two rows in final frame, got %q", frame)
+	}
+	for _, row := range rows {
+		row = strings.TrimPrefix(row, "\r\x1b[2K")
+		if visibleWidth(row) > 24 {
+			t.Fatalf("row exceeds terminal width: %q", row)
+		}
+	}
+}
+
+func TestLiveStatusBoardHumanizesLongImageDigest(t *testing.T) {
+	var dest bytes.Buffer
+	board := newLiveStatusBoardWithWidth(&dest, []target{{Label: "api"}}, 100)
 	board.start()
 
+	digest := strings.Repeat("a", 64)
 	writer := &liveStatusWriter{board: board, target: target{Label: "api"}}
-	for i := 0; i < 10; i++ {
-		line := fmt.Sprintf(`{"id":"Image img-%d","status":"Working","text":"Pulling %d"}`, i, i)
-		if _, err := io.WriteString(writer, line+"\n"); err != nil {
-			t.Fatalf("write: %v", err)
-		}
+	line := fmt.Sprintf(`{"id":"Image ghcr.io/acme/app:latest@sha256:%s","status":"Working","text":"Pulling","percent":40}`, digest)
+	if _, err := io.WriteString(writer, line+"\n"); err != nil {
+		t.Fatalf("write: %v", err)
 	}
 	writer.finishStreamingOutput()
 
-	if len(board.resources["api"].order) != 10 {
-		t.Fatalf("expected all 10 rows tracked, got %d", len(board.resources["api"].order))
+	want := "ghcr.io/acme/app:latest Pulling (40%)"
+	if got := board.statuses["api"]; got != want {
+		t.Fatalf("expected humanized image activity %q, got %q", want, got)
 	}
-
-	wantFrame := ""
-	for i := 2; i < 10; i++ {
-		wantFrame += fmt.Sprintf("\r\x1b[2K[api] img-%d Pulling %d\n", i, i)
-	}
-	wantFrame += "\r\x1b[2K[api] +2 more\n"
-	if !strings.HasSuffix(dest.String(), "\x1b[9A"+wantFrame) {
-		t.Fatalf("unexpected capped frame:\n%q", dest.String())
+	if strings.Contains(dest.String(), "sha256:") {
+		t.Fatalf("expected digest omitted from live board, got %q", dest.String())
 	}
 }
 
