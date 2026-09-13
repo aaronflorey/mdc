@@ -2640,6 +2640,104 @@ func TestLiveStatusBoardUpdatesStatusFromPlainComposeLine(t *testing.T) {
 	}
 }
 
+func TestLiveStatusBoardUpdatesCompletionStatePerTarget(t *testing.T) {
+	var dest bytes.Buffer
+	board := newLiveStatusBoard(&dest, []target{{Label: "api"}, {Label: "web"}})
+	board.start()
+
+	board.complete("api", commandResult{exitCode: 0})
+	if got := board.statuses["api"]; got != "succeeded" {
+		t.Fatalf("expected successful completion state, got %q", got)
+	}
+	if got := board.statuses["web"]; got != "waiting" {
+		t.Fatalf("expected unfinished target to remain waiting, got %q", got)
+	}
+
+	frame := dest.String()[strings.LastIndex(dest.String(), "\x1b[2A")+len("\x1b[2A"):]
+	if !strings.Contains(frame, "[api] succeeded") || !strings.Contains(frame, "[web] waiting") {
+		t.Fatalf("expected completion update to render independently, got %q", frame)
+	}
+
+	board.complete("web", commandResult{exitCode: 1})
+	if got := board.statuses["web"]; got != "failed" {
+		t.Fatalf("expected failed completion state, got %q", got)
+	}
+}
+
+func TestWriteLiveReportDeduplicatesWarningsPerTargetIncludingSuccesses(t *testing.T) {
+	warning := `{"level":"warning","msg":"The \"version\" field is obsolete and will be ignored. It's recommended to remove it to avoid potential confusion"}`
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	writeLiveReport(&stdout, &stderr, []commandResult{
+		{target: target{Label: "api"}, stderr: warning, stdout: warning},
+		{target: target{Label: "web"}, stderr: warning, stdout: warning, exitCode: 3},
+	})
+
+	if got, want := stdout.String(), "1 target succeeded, 1 target failed\n"; got != want {
+		t.Fatalf("expected aggregate count %q, got %q", want, got)
+	}
+	if strings.Contains(stdout.String(), "Warning:") {
+		t.Fatalf("expected diagnostics on stderr, got %q", stdout.String())
+	}
+	if got := strings.Count(stderr.String(), "Warning: The \"version\" field is obsolete"); got != 2 {
+		t.Fatalf("expected one warning per target, got %d in %q", got, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "Warnings:\n[api]") || !strings.Contains(stderr.String(), "[web]\n") {
+		t.Fatalf("expected warnings grouped by target, got %q", stderr.String())
+	}
+}
+
+func TestWriteLiveReportPreservesMultilineComposeError(t *testing.T) {
+	message := "error while interpolating services.db.environment.JWT_SECRET: required variable JWT_SECRET is missing a value: JWT_SECRET is required\nerror while interpolating services.db.environment.POSTGRES_PASSWORD: required variable POSTGRES_PASSWORD is missing a value: POSTGRES_PASSWORD is required"
+	errorEnvelope := fmt.Sprintf(`{"error":true,"message":%q}`, message)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	writeLiveReport(&stdout, &stderr, []commandResult{
+		{target: target{Label: "api"}, stderr: errorEnvelope, exitCode: 1},
+	})
+
+	want := "Failed:\n[api]\nError: " + message + "\n"
+	if !strings.Contains(stderr.String(), want) {
+		t.Fatalf("expected exact multiline compose error detail %q, got %q", want, stderr.String())
+	}
+}
+
+func TestWriteLiveReportUsesExitCodeFallback(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	writeLiveReport(&stdout, &stderr, []commandResult{
+		{target: target{Label: "api"}, exitCode: 7},
+	})
+
+	if !strings.Contains(stderr.String(), "Failed:\n[api]\nexit 7\n") {
+		t.Fatalf("expected exit-code failure fallback, got %q", stderr.String())
+	}
+}
+
+func TestWriteLiveReportOmitsPerTargetSummaries(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	writeLiveReport(&stdout, &stderr, []commandResult{
+		{target: target{Label: "."}, stdout: "plain success output"},
+		{target: target{Label: "api"}, stderr: "plain stderr line 1\nplain stderr line 2", stdout: "plain stdout detail", exitCode: 7},
+	})
+
+	if got, want := stdout.String(), "1 target succeeded, 1 target failed\n"; got != want {
+		t.Fatalf("expected live aggregate, got %q", got)
+	}
+	for _, summary := range []string{"up complete", "pull complete", "build complete"} {
+		if strings.Contains(stdout.String(), summary) {
+			t.Fatalf("expected no per-target %q summary, got %q", summary, stdout.String())
+		}
+	}
+	if !strings.Contains(stderr.String(), "Failed:\n[api]\nplain stderr line 1\nplain stderr line 2\nplain stdout detail\n") {
+		t.Fatalf("expected readable plain failure detail, got %q", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "target(s) failed") {
+		t.Fatalf("expected live report to omit old failure summary, got %q", stderr.String())
+	}
+}
+
 func TestProgressPercent(t *testing.T) {
 	tests := []struct {
 		name  string

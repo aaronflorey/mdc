@@ -182,18 +182,26 @@ func runCLI(ctx context.Context, stdout io.Writer, stderr io.Writer, argv []stri
 		}
 	}
 
-	results := executeTargets(ctx, targets, composeArgs, opts.jobs, runner, writers)
+	var completion targetCompletion
+	if liveBoard != nil {
+		completion = func(stack target, result commandResult) {
+			liveBoard.complete(stack.Label, result)
+		}
+	}
+	results := executeTargetsWithCompletion(ctx, targets, composeArgs, opts.jobs, runner, writers, completion)
 	if liveBoard != nil {
 		liveBoard.finish()
-	}
-	if mode == outputModeBuffered {
-		if quietConfig {
-			writeConfigValidationSummary(stdout, results)
-		} else {
-			writeBufferedOutput(stdout, command, results, opts.quietTargets)
-		}
+		writeLiveReport(stdout, stderr, results)
 	} else {
-		writeStandardOutput(stdout, results, opts.quietTargets)
+		if mode == outputModeBuffered {
+			if quietConfig {
+				writeConfigValidationSummary(stdout, results)
+			} else {
+				writeBufferedOutput(stdout, command, results, opts.quietTargets)
+			}
+		} else {
+			writeStandardOutput(stdout, results, opts.quietTargets)
+		}
 	}
 
 	if ctx.Err() != nil {
@@ -202,7 +210,9 @@ func runCLI(ctx context.Context, stdout io.Writer, stderr io.Writer, argv []stri
 	}
 
 	if failures := failureResults(results); len(failures) > 0 {
-		writeFailureSummary(stderr, failures)
+		if liveBoard == nil {
+			writeFailureSummary(stderr, failures)
+		}
 		return failures[0].exitCode
 	}
 
@@ -679,6 +689,14 @@ func (b *liveStatusBoard) update(label string, status string) {
 	b.renderLocked(true)
 }
 
+func (b *liveStatusBoard) complete(label string, result commandResult) {
+	status := "succeeded"
+	if result.exitCode != 0 {
+		status = "failed"
+	}
+	b.update(label, status)
+}
+
 func (b *liveStatusBoard) updateProgress(label string, event progressEvent) {
 	if event.ParentID != "" {
 		return
@@ -1074,6 +1092,12 @@ func sanitizeComposeProjectComponent(value string) string {
 type targetWriterFactory func(target) (io.Writer, io.Writer)
 
 func executeTargets(ctx context.Context, targets []target, args []string, jobs int, runner composeRunner, writers targetWriterFactory) []commandResult {
+	return executeTargetsWithCompletion(ctx, targets, args, jobs, runner, writers, nil)
+}
+
+type targetCompletion func(target, commandResult)
+
+func executeTargetsWithCompletion(ctx context.Context, targets []target, args []string, jobs int, runner composeRunner, writers targetWriterFactory, completion targetCompletion) []commandResult {
 	results := make([]commandResult, len(targets))
 	limit := jobs
 	if limit <= 0 || limit > len(targets) {
@@ -1090,7 +1114,11 @@ func executeTargets(ctx context.Context, targets []target, args []string, jobs i
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			stdout, stderr := writers(stack)
-			results[index] = runner(ctx, stack, args, stdout, stderr)
+			result := runner(ctx, stack, args, stdout, stderr)
+			results[index] = result
+			if completion != nil {
+				completion(stack, result)
+			}
 		}(i, stack)
 	}
 
@@ -2342,6 +2370,136 @@ func configValidationLine(result commandResult, decorated bool) string {
 		mark = "✘"
 	}
 	return mark + " " + text
+}
+
+type liveTargetDiagnostics struct {
+	warnings []string
+	errors   []string
+	plain    string
+}
+
+func writeLiveReport(stdout io.Writer, stderr io.Writer, results []commandResult) {
+	failures := failureResults(results)
+	succeeded := len(results) - len(failures)
+	_, _ = fmt.Fprintf(stdout, "%d %s succeeded, %d %s failed\n", succeeded, targetNoun(succeeded), len(failures), targetNoun(len(failures)))
+	writeLiveDiagnostics(stderr, results)
+}
+
+func targetNoun(count int) string {
+	if count == 1 {
+		return "target"
+	}
+	return "targets"
+}
+
+func writeLiveDiagnostics(stderr io.Writer, results []commandResult) {
+	diagnostics := make([]liveTargetDiagnostics, len(results))
+	for i, result := range results {
+		diagnostics[i] = collectLiveDiagnostics(result)
+	}
+	hasWarnings := writeLiveWarnings(stderr, results, diagnostics)
+	if hasWarnings && len(failureResults(results)) > 0 {
+		_, _ = fmt.Fprintln(stderr)
+	}
+	writeLiveFailures(stderr, results, diagnostics)
+}
+
+func writeLiveWarnings(stderr io.Writer, results []commandResult, diagnostics []liveTargetDiagnostics) bool {
+	hasWarnings := false
+	for _, diagnostic := range diagnostics {
+		if len(diagnostic.warnings) > 0 {
+			hasWarnings = true
+			break
+		}
+	}
+	if hasWarnings {
+		_, _ = io.WriteString(stderr, "Warnings:\n")
+		for i, diagnostic := range diagnostics {
+			if len(diagnostic.warnings) == 0 {
+				continue
+			}
+			_, _ = fmt.Fprintf(stderr, "[%s]\n", results[i].target.Label)
+			for _, warning := range diagnostic.warnings {
+				_, _ = fmt.Fprintln(stderr, warning)
+			}
+		}
+	}
+	return hasWarnings
+}
+
+func writeLiveFailures(stderr io.Writer, results []commandResult, diagnostics []liveTargetDiagnostics) {
+	if len(failureResults(results)) == 0 {
+		return
+	}
+	_, _ = io.WriteString(stderr, "Failed:\n")
+	for i, result := range results {
+		if result.exitCode == 0 {
+			continue
+		}
+		_, _ = fmt.Fprintf(stderr, "[%s]\n", result.target.Label)
+		diagnostic := diagnostics[i]
+		if len(diagnostic.errors) > 0 {
+			for _, detail := range diagnostic.errors {
+				_, _ = fmt.Fprintln(stderr, detail)
+			}
+			continue
+		}
+
+		detail := diagnostic.plain
+		if detail == "" {
+			detail = fmt.Sprintf("exit %d", result.exitCode)
+		}
+		_, _ = fmt.Fprintln(stderr, detail)
+	}
+}
+
+func collectLiveDiagnostics(result commandResult) liveTargetDiagnostics {
+	var diagnostics liveTargetDiagnostics
+	var plain []string
+	for _, text := range []string{result.stderr, result.stdout} {
+		for _, line := range strings.Split(text, "\n") {
+			normalized, ok := normalizeComposeDiagnosticLine(line)
+			if !ok {
+				continue
+			}
+			switch {
+			case strings.HasPrefix(normalized, "Warning: "):
+				diagnostics.warnings = appendUnique(diagnostics.warnings, normalized)
+			case strings.HasPrefix(normalized, "Error: "):
+				diagnostics.errors = appendUnique(diagnostics.errors, normalized)
+			}
+		}
+
+		if detail := plainDiagnosticText(text); detail != "" {
+			plain = append(plain, detail)
+		}
+	}
+	diagnostics.plain = strings.Join(plain, "\n")
+	return diagnostics
+}
+
+func normalizeComposeDiagnosticLine(line string) (string, bool) {
+	return parseComposeLogLine(line)
+}
+
+func plainDiagnosticText(text string) string {
+	lines := strings.Split(text, "\n")
+	plain := make([]string, 0, len(lines))
+	for _, line := range lines {
+		normalized, ok := normalizeComposeDiagnosticLine(line)
+		if ok && (strings.HasPrefix(normalized, "Warning: ") || strings.HasPrefix(normalized, "Error: ")) {
+			continue
+		}
+		plain = append(plain, line)
+	}
+	return strings.TrimSpace(transformProgressLines(strings.Join(plain, "\n")))
+}
+
+func appendUnique(values []string, value string) []string {
+	if slices.Contains(values, value) {
+		return values
+	}
+	return append(values, value)
 }
 
 func writeFailureSummary(stderr io.Writer, failures []commandResult) {
