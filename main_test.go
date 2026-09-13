@@ -2528,6 +2528,23 @@ func TestParseProgressLine(t *testing.T) {
 	}
 }
 
+func TestTransformProgressLinesRendersComposeLogRecords(t *testing.T) {
+	warning := `{"level":"warning","msg":"The \"version\" field is obsolete and will be ignored. It's recommended to remove it to avoid potential confusion","time":"2026-08-15T10:00:00Z"}`
+	error := `{"error":true,"message":"invalid interpolation format for services.price-stalker.environment.[]: \"${PRICE_STALKER_IMAGE}\"\nYou may need to escape any $ with another $."}`
+
+	want := "Warning: The \"version\" field is obsolete and will be ignored. It's recommended to remove it to avoid potential confusion\nError: invalid interpolation format for services.price-stalker.environment.[]: \"${PRICE_STALKER_IMAGE}\"\nYou may need to escape any $ with another $."
+	if got := transformProgressLines(warning + "\n" + error); got != want {
+		t.Fatalf("expected normalized compose diagnostics %q, got %q", want, got)
+	}
+}
+
+func TestTransformProgressLinesLeavesUnknownOutputUnchanged(t *testing.T) {
+	input := "{\"message\":\"not a compose error\"}\n{malformed}\nplain text"
+	if got := transformProgressLines(input); got != input {
+		t.Fatalf("expected unknown output unchanged, got %q", got)
+	}
+}
+
 func TestLiveStatusWriterParsesProgressEvents(t *testing.T) {
 	var dest bytes.Buffer
 	board := newLiveStatusBoard(&dest, []target{{Label: "."}, {Label: "api"}})
@@ -2697,6 +2714,23 @@ func TestLinePrefixWriterRendersProgressEvents(t *testing.T) {
 	}
 }
 
+func TestLinePrefixWriterRendersComposeLogRecords(t *testing.T) {
+	var dest bytes.Buffer
+	var mu sync.Mutex
+	writer := &linePrefixWriter{dest: &dest, prefix: "[api] ", mu: &mu, atLineStart: true}
+
+	input := `{"level":"warning","msg":"The \"version\" field is obsolete and will be ignored. It's recommended to remove it to avoid potential confusion","time":"2026-08-15T10:00:00Z"}` + "\n" +
+		`{"error":true,"message":"invalid interpolation format for services.price-stalker.environment.[]: \"${PRICE_STALKER_IMAGE}\"\nYou may need to escape any $ with another $."}` + "\n"
+	if _, err := io.WriteString(writer, input); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	want := "[api] Warning: The \"version\" field is obsolete and will be ignored. It's recommended to remove it to avoid potential confusion\n[api] Error: invalid interpolation format for services.price-stalker.environment.[]: \"${PRICE_STALKER_IMAGE}\"\n[api] You may need to escape any $ with another $.\n"
+	if got := dest.String(); got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
 func TestTargetOutputTransformsProgressLinesInStderr(t *testing.T) {
 	result := commandResult{
 		target:   target{Label: "api"},
@@ -2720,6 +2754,16 @@ func TestWriteFailureSummaryTransformsProgressLines(t *testing.T) {
 	})
 	if got := stderr.String(); !strings.Contains(got, "api (Error: Container api-web-1 (boom))") {
 		t.Fatalf("expected transformed failure summary, got %q", got)
+	}
+}
+
+func TestWriteFailureSummaryRendersComposeErrorRecord(t *testing.T) {
+	var stderr bytes.Buffer
+	writeFailureSummary(&stderr, []commandResult{
+		{target: target{Label: "api"}, stderr: `{"error":true,"message":"invalid interpolation format for services.price-stalker.environment.[]: \"${PRICE_STALKER_IMAGE}\"\nYou may need to escape any $ with another $."}`, exitCode: 1},
+	})
+	if got := stderr.String(); !strings.Contains(got, "api (Error: invalid interpolation format for services.price-stalker.environment.[]: \"${PRICE_STALKER_IMAGE}\")") {
+		t.Fatalf("expected compose error in failure summary, got %q", got)
 	}
 }
 

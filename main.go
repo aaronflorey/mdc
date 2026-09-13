@@ -580,8 +580,14 @@ func (w *linePrefixWriter) Write(p []byte) (int, error) {
 
 		lineEnd += start
 		if lineEnd > start {
-			if event, ok := parseProgressLine(string(p[start:lineEnd])); ok {
+			line := string(p[start:lineEnd])
+			if event, ok := parseProgressLine(line); ok {
 				if _, err := io.WriteString(w.dest, progressEventLine(event)); err != nil {
+					return len(p), err
+				}
+			} else if message, ok := parseComposeLogLine(line); ok {
+				message = strings.ReplaceAll(message, "\n", "\n"+w.prefix)
+				if _, err := io.WriteString(w.dest, message); err != nil {
 					return len(p), err
 				}
 			} else if _, err := w.dest.Write(p[start:lineEnd]); err != nil {
@@ -812,6 +818,10 @@ func (w *liveStatusWriter) flushLineLocked() {
 		w.board.updateResource(w.target.Label, event)
 		return
 	}
+	if message, ok := parseComposeLogLine(line); ok {
+		w.board.update(w.target.Label, firstLine(message))
+		return
+	}
 	w.board.update(w.target.Label, summarizeComposeStatusLine(line))
 }
 
@@ -876,6 +886,55 @@ func parseProgressLine(line string) (progressEvent, bool) {
 	return event, true
 }
 
+type composeLogRecord struct {
+	Level   string `json:"level"`
+	Msg     string `json:"msg"`
+	Error   bool   `json:"error"`
+	Message string `json:"message"`
+}
+
+func parseComposeLogLine(line string) (string, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return "", false
+	}
+
+	var record composeLogRecord
+	if err := json.Unmarshal([]byte(line), &record); err != nil {
+		return "", false
+	}
+
+	message := record.Msg
+	if message == "" {
+		message = record.Message
+	}
+	if message == "" || (record.Level == "" && !record.Error) {
+		return "", false
+	}
+
+	label := ""
+	switch strings.ToLower(record.Level) {
+	case "warning", "warn":
+		label = "Warning"
+	case "error":
+		label = "Error"
+	}
+	if label == "" && record.Error {
+		label = "Error"
+	}
+	if label != "" {
+		return label + ": " + message, true
+	}
+	return message, true
+}
+
+func normalizeProgressLine(line string) (string, bool) {
+	if event, ok := parseProgressLine(line); ok {
+		return progressEventLine(event), true
+	}
+	return parseComposeLogLine(line)
+}
+
 func progressEventStatus(event progressEvent) string {
 	text := event.Text
 	if text == "" {
@@ -910,8 +969,8 @@ func progressEventLine(event progressEvent) string {
 func transformProgressLines(text string) string {
 	lines := strings.Split(text, "\n")
 	for i, line := range lines {
-		if event, ok := parseProgressLine(line); ok {
-			lines[i] = progressEventLine(event)
+		if normalized, ok := normalizeProgressLine(line); ok {
+			lines[i] = normalized
 		}
 	}
 	return strings.Join(lines, "\n")
