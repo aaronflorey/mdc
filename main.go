@@ -1208,9 +1208,9 @@ func outputModeForArgs(args []string, jobs int, targetCount int) (outputMode, er
 		return outputModePassthrough, nil
 	}
 
-	if isInterleavedComposeCommand(command) {
+	if isSerialPassthroughComposeCommand(command) {
 		if parallel {
-			return outputModeInterleaved, nil
+			return outputModeBuffered, nil
 		}
 		return outputModePassthrough, nil
 	}
@@ -1297,9 +1297,9 @@ func isInteractiveComposeCommand(command string) bool {
 	}
 }
 
-func isInterleavedComposeCommand(command string) bool {
+func isSerialPassthroughComposeCommand(command string) bool {
 	switch command {
-	case "create", "down", "pull", "restart", "start", "stop", "top", "up":
+	case "create", "down", "restart", "start", "stop", "top":
 		return true
 	default:
 		return false
@@ -1403,18 +1403,8 @@ func shouldMergeImages(args []string) bool {
 
 func shouldMergeVolumes(args []string) bool {
 	command, commandIndex := composeCommand(args)
-	if command != "volume" {
+	if command != "volumes" {
 		return false
-	}
-	for i := commandIndex + 1; i < len(args); i++ {
-		arg := args[i]
-		if strings.HasPrefix(arg, "-") {
-			continue
-		}
-		if arg != "ls" {
-			return false
-		}
-		break
 	}
 
 	format, hasFormat := psFormat(args, commandIndex)
@@ -1610,16 +1600,8 @@ func runVolumes(ctx context.Context, stdout io.Writer, stderr io.Writer, targets
 
 func volumesJSONArgs(args []string) []string {
 	command, commandIndex := composeCommand(args)
-	if command != "volume" {
+	if command != "volumes" {
 		return append([]string(nil), args...)
-	}
-
-	insertAt := commandIndex + 1
-	for insertAt < len(args) && strings.HasPrefix(args[insertAt], "-") {
-		insertAt++
-	}
-	if insertAt < len(args) {
-		insertAt++
 	}
 
 	if format, hasFormat := psFormat(args, commandIndex); hasFormat && strings.EqualFold(format, "json") {
@@ -1627,9 +1609,9 @@ func volumesJSONArgs(args []string) []string {
 	}
 
 	updated := make([]string, 0, len(args)+2)
-	updated = append(updated, args[:insertAt]...)
+	updated = append(updated, args[:commandIndex+1]...)
 	updated = append(updated, "--format", "json")
-	updated = append(updated, args[insertAt:]...)
+	updated = append(updated, args[commandIndex+1:]...)
 	return updated
 }
 

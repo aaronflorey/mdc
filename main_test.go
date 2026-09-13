@@ -221,7 +221,9 @@ func TestOutputModeForArgsUsesCommandBehavior(t *testing.T) {
 		{name: "parallel stats buffers", args: []string{"stats"}, jobs: 0, targets: 2, wantMode: outputModeBuffered},
 		{name: "serial stats passthrough", args: []string{"stats"}, jobs: 1, targets: 2, wantMode: outputModePassthrough},
 		{name: "single-target stats passthrough", args: []string{"stats"}, jobs: 0, targets: 1, wantMode: outputModePassthrough},
-		{name: "parallel top interleaves", args: []string{"top"}, jobs: 0, targets: 2, wantMode: outputModeInterleaved},
+		{name: "parallel down with volumes buffers", args: []string{"down", "--volumes"}, jobs: 0, targets: 2, wantMode: outputModeBuffered},
+		{name: "parallel restart buffers", args: []string{"restart"}, jobs: 0, targets: 2, wantMode: outputModeBuffered},
+		{name: "parallel top buffers", args: []string{"top"}, jobs: 0, targets: 2, wantMode: outputModeBuffered},
 		{name: "serial top passthrough", args: []string{"top"}, jobs: 1, targets: 2, wantMode: outputModePassthrough},
 		{name: "single-target top passthrough", args: []string{"top"}, jobs: 0, targets: 1, wantMode: outputModePassthrough},
 	}
@@ -852,14 +854,13 @@ func TestShouldMergeVolumes(t *testing.T) {
 		args []string
 		want bool
 	}{
-		{name: "volume ls", args: []string{"volume", "ls"}, want: true},
-		{name: "bare volume defaults to ls", args: []string{"volume"}, want: true},
-		{name: "leading flags", args: []string{"--ansi", "never", "volume", "ls"}, want: true},
-		{name: "volume ls with format flag", args: []string{"volume", "ls", "--format", "json"}, want: true},
-		{name: "volume ls with non-json format", args: []string{"volume", "ls", "--format", "table"}, want: false},
-		{name: "non-ls subcommand", args: []string{"volume", "create", "web_cache"}, want: false},
+		{name: "volumes", args: []string{"volumes"}, want: true},
+		{name: "volumes with service", args: []string{"volumes", "web"}, want: true},
+		{name: "leading flags", args: []string{"--ansi", "never", "volumes"}, want: true},
+		{name: "volumes with format flag", args: []string{"volumes", "--format", "json"}, want: true},
+		{name: "volumes with non-json format", args: []string{"volumes", "--format", "table"}, want: false},
 		{name: "other command", args: []string{"ps"}, want: false},
-		{name: "nested under exec", args: []string{"exec", "app", "volume", "ls"}, want: false},
+		{name: "nested under exec", args: []string{"exec", "app", "volumes"}, want: false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -876,10 +877,10 @@ func TestVolumesJSONArgs(t *testing.T) {
 		args []string
 		want string
 	}{
-		{name: "volume ls", args: []string{"volume", "ls"}, want: "volume ls --format json"},
-		{name: "bare volume", args: []string{"volume"}, want: "volume --format json"},
-		{name: "explicit json format", args: []string{"volume", "ls", "--format", "json"}, want: "volume ls --format json"},
-		{name: "explicit json format equals", args: []string{"volume", "ls", "--format=json"}, want: "volume ls --format=json"},
+		{name: "volumes", args: []string{"volumes"}, want: "volumes --format json"},
+		{name: "volumes with service", args: []string{"volumes", "web"}, want: "volumes --format json web"},
+		{name: "explicit json format", args: []string{"volumes", "--format", "json"}, want: "volumes --format json"},
+		{name: "explicit json format equals", args: []string{"volumes", "--format=json"}, want: "volumes --format=json"},
 		{name: "other command", args: []string{"ps"}, want: "ps"},
 	}
 	for _, test := range tests {
@@ -907,7 +908,7 @@ func TestRunCLIMergesVolumesOutput(t *testing.T) {
 	}
 
 	runner := func(_ context.Context, stack target, args []string, _ io.Writer, _ io.Writer) commandResult {
-		if strings.Join(args, " ") != "volume ls --format json" {
+		if strings.Join(args, " ") != "volumes --format json" {
 			t.Fatalf("unexpected args: %v", args)
 		}
 		if stack.Label == "." {
@@ -918,7 +919,7 @@ func TestRunCLIMergesVolumesOutput(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	code := runCLI(context.Background(), &stdout, &stderr, []string{"volume", "ls"}, runner)
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"volumes"}, runner)
 	if code != 0 {
 		t.Fatalf("expected success, got %d with stderr %q", code, stderr.String())
 	}
@@ -956,7 +957,7 @@ func TestRunCLIVolumesFallsBackToText(t *testing.T) {
 		mu.Lock()
 		calls = append(calls, stack.Label+":"+strings.Join(args, " "))
 		mu.Unlock()
-		if strings.Join(args, " ") == "volume ls --format json" {
+		if strings.Join(args, " ") == "volumes --format json" {
 			return commandResult{target: stack, stderr: "unsupported format", exitCode: 1, err: fmt.Errorf("unsupported format")}
 		}
 		return commandResult{target: stack, stdout: "DRIVER VOLUME NAME\nlocal " + stack.Label + "_cache\n"}
@@ -964,7 +965,7 @@ func TestRunCLIVolumesFallsBackToText(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	code := runCLI(context.Background(), &stdout, &stderr, []string{"volume", "ls"}, runner)
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"volumes"}, runner)
 
 	if code != 0 {
 		t.Fatalf("expected success, got %d with stderr %q", code, stderr.String())
@@ -980,10 +981,10 @@ func TestRunCLIVolumesFallsBackToText(t *testing.T) {
 		t.Fatalf("expected json attempt plus fallback for each target, got %v", calls)
 	}
 	expectedCalls := map[string]int{
-		".:volume ls --format json":   1,
-		"api:volume ls --format json": 1,
-		".:volume ls":                 1,
-		"api:volume ls":               1,
+		".:volumes --format json":   1,
+		"api:volumes --format json": 1,
+		".:volumes":                 1,
+		"api:volumes":               1,
 	}
 	for _, call := range calls {
 		expectedCalls[call]--
@@ -1255,6 +1256,44 @@ func TestRunCLIBuffersTopLevelParallelLogsWithoutFollow(t *testing.T) {
 	output := stdout.String()
 	if !strings.Contains(output, "[.]\nhistory line\n") || !strings.Contains(output, "[api]\nhistory line\n") {
 		t.Fatalf("expected grouped buffered logs output, got %q", output)
+	}
+}
+
+func TestRunCLIBuffersTopLevelParallelTopInTargetOrder(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "api", "compose.yaml"))
+	mustWriteFile(t, filepath.Join(root, "zebra", "compose.yaml"))
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() { _ = os.Chdir(wd) }()
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	runner := func(_ context.Context, stack target, args []string, stdout io.Writer, stderr io.Writer) commandResult {
+		if strings.Join(args, " ") != "top" {
+			t.Fatalf("unexpected args: %v", args)
+		}
+		if stdout != nil || stderr != nil {
+			t.Fatalf("expected buffered top output")
+		}
+		return commandResult{target: stack, stdout: fmt.Sprintf("%s top line 1\n%s top line 2\n", stack.Label, stack.Label)}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runCLI(context.Background(), &stdout, &stderr, []string{"top"}, runner)
+	if code != 0 {
+		t.Fatalf("expected success, got %d with stderr %q", code, stderr.String())
+	}
+
+	want := "[.]\n. top line 1\n. top line 2\n\n[api]\napi top line 1\napi top line 2\n\n[zebra]\nzebra top line 1\nzebra top line 2\n"
+	if stdout.String() != want {
+		t.Fatalf("expected grouped top output in target order, got %q", stdout.String())
 	}
 }
 
@@ -2414,7 +2453,7 @@ func TestSupportsJSONProgress(t *testing.T) {
 			t.Fatalf("expected %s to support json progress", command)
 		}
 	}
-	withoutProgress := []string{"attach", "config", "events", "exec", "images", "logs", "ls", "ps", "stats", "top", "version", "volume", "watch"}
+	withoutProgress := []string{"attach", "config", "events", "exec", "images", "logs", "ls", "ps", "stats", "top", "version", "volumes", "watch"}
 	for _, command := range withoutProgress {
 		if supportsJSONProgress(command) {
 			t.Fatalf("expected %s to not support json progress", command)
