@@ -55,7 +55,7 @@ func run() (code int) {
 		return exitInterrupt
 	}
 	sentry.CaptureException(err)
-	fmt.Fprintln(os.Stderr, errorStyle().Render("Error: "+err.Error()))
+	_, _ = lipgloss.Fprintln(os.Stderr, errorStyle().Render("Error: "+err.Error()))
 	return exitFailure
 }
 
