@@ -1,12 +1,12 @@
 # mdc
 
-Run one `docker compose` command across every compose project in a directory tree.
+Run Docker Compose commands across every compose project in a directory tree, with one live progress view.
 
 [![License](https://img.shields.io/github/license/aaronflorey/mdc)](LICENSE)
 [![CI](https://github.com/aaronflorey/mdc/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/aaronflorey/mdc/actions/workflows/ci.yml)
 [![Latest Release](https://img.shields.io/github/v/release/aaronflorey/mdc?sort=semver)](https://github.com/aaronflorey/mdc/releases)
 
-`mdc` discovers `compose.yaml`, `compose.yml`, `docker-compose.yaml`, and `docker-compose.yml`, picks one canonical file per directory, and runs the same `docker compose` command for each target.
+`mdc` finds the compose projects below the current directory and runs a compose command against each of them concurrently. It is built on the Docker Compose library, so it does not need the `docker compose` plugin, only a reachable Docker Engine.
 
 ## Installation
 
@@ -22,75 +22,101 @@ Prebuilt binaries are also published on the [GitHub releases page](https://githu
 
 ## Quick Start
 
-```bash
-mdc ps
-mdc up -d
-mdc --depth 2 pull
-mdc --jobs 4 logs --tail 50
-mdc --ansi never ps
-```
-
-## Usage
+From a directory whose subdirectories each contain a compose file:
 
 ```bash
-mdc [mdc flags] <docker compose args...>
+mdc ls                      # list the projects mdc discovered
+mdc up -d                   # start every project in the background
+mdc ps                      # one table of containers across projects
+mdc --jobs 2 pull           # run at most two projects at a time
+mdc logs -f web             # follow the "web" service of every project that has one
+mdc down
 ```
 
-## Flags
+Each project gets a section in the live view with one row per resource. Finished projects collapse to a single line, and a summary at the end lists projects that succeeded, were skipped, or failed. The exit code is non-zero if any project failed.
 
-- `--depth`: scan depth (`0` = current directory only, default `1`)
-- `--jobs`: max concurrent `docker compose` processes (`0` = all targets)
-- `--quiet-targets`: suppress per-target section headers; merged tables, live prefixes, and completion labels retain attribution
+## Discovery
 
-## Setup
+- `mdc` scans the current directory and its subdirectories down to `--depth` (`0` is the current directory only; the default is `1`). Unreadable directories are skipped.
+- Each directory contributes at most one compose file, chosen in this order: `compose.yaml`, `compose.yml`, `docker-compose.yaml`, `docker-compose.yml`.
+- The project name is the directory name, sanitized the way Compose does it. If two directories would get the same name, `mdc` gives them deterministic unique names.
+
+## Global flags
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--depth` | `1` | Directory depth to scan for compose projects |
+| `--jobs` | `0` | Maximum projects to run at once (`0` runs all at once) |
+| `--profile` | | Compose profile to enable (repeatable) |
+| `--env-file` | | Alternate environment file (repeatable) |
+| `--parallel` | `-1` | Maximum parallelism within a project (`-1` is unlimited) |
+| `--compatibility` | `false` | Run Compose in backward compatibility mode |
+| `--dry-run` | `false` | Show what would happen without changing anything |
+| `--all-resources` | `false` | Include resources no service uses |
+
+Compose's `-f`, `-p`, and `--project-directory` are not offered because discovery decides them.
+
+## Configuration
+
+Every global flag can also be set with an environment variable or in a config file. Precedence, highest first:
+
+1. Command-line flags
+2. Environment variables named `MDC_` plus the flag name in upper case, with `-` replaced by `_` (`MDC_DEPTH`, `MDC_JOBS`, `MDC_DRY_RUN`, `MDC_ENV_FILE`)
+3. The config file
+4. Defaults
+
+The config file is `mdc/config.yaml` inside your user config directory (`$XDG_CONFIG_HOME` or `~/.config` on Linux, `~/Library/Application Support` on macOS). Keys are the flag names:
+
+```yaml
+# ~/.config/mdc/config.yaml
+depth: 2
+jobs: 4
+profile:
+  - dev
+```
+
+A missing file is fine; a file that cannot be parsed is an error.
+
+## Commands
+
+`build`, `config`, `create`, `down`, `events`, `images`, `kill`, `logs`, `ls`, `pause`, `ps`, `pull`, `push`, `restart`, `rm`, `scale`, `start`, `stats`, `stop`, `top`, `unpause`, `up`, `version`, `volumes`, `wait`, `watch`.
+
+Commands keep the names, arguments, and flags of their `docker compose` equivalents; run `mdc <command> --help` for the details. `--format` accepts `table` (the default) or `json`. `ls` is specific to `mdc` and lists the discovered projects.
+
+These commands act on a single container or destination, so `mdc` does not provide them. Use `docker compose` for `attach`, `commit`, `cp`, `exec`, `export`, `port`, `run`, `publish`, `alpha`, `bridge`, `generate`, and `viz`.
+
+### Selecting services
+
+Commands that take `[SERVICE...]` apply the names to each project separately:
+
+- A project that defines none of the named services is skipped.
+- A name that no project defines produces a warning.
+- It is an error only if no project matches any of the names.
+
+With no service names, the whole project is used.
+
+## Requirements
+
+`mdc` is interactive and needs a terminal. Run it directly in one: piping or redirecting its output exits with an error. `help`, `version`, and `completion` work anywhere. Set `NO_COLOR` to disable colours.
+
+Set `SENTRY_DSN` to report unexpected errors and panics to Sentry. Nothing is sent when it is unset.
+
+## Development
+
+Development is driven by [mise](https://mise.jdx.dev/) for tool versions and [Task](https://taskfile.dev/) for commands.
 
 ```bash
 git clone https://github.com/aaronflorey/mdc.git
 cd mdc
-mise install
-task setup
-task ci
-```
-
-## How It Works
-
-- Discovery starts in the current directory and walks child directories up to `--depth`.
-- If a directory has multiple compose files, this precedence is used:
-  1. `compose.yaml`
-  2. `compose.yml`
-  3. `docker-compose.yaml`
-  4. `docker-compose.yml`
-- `mdc` preserves the target directory basename as the Compose project name when it is unique, and switches to a deterministic unique name only when duplicate basenames would collide.
-- Most non-`ps` commands print grouped output per project in sorted directory order.
-- Top-level multi-target detached `mdc up -d` keeps one bounded live row per project on TTYs so concurrent Docker progress stays stable, then prints a concise aggregate plus grouped, deduplicated diagnostics on completion; non-TTY output remains grouped, and failed targets still print grouped details. Attached multi-target `mdc up` keeps live target-prefixed output.
-- Top-level multi-target `mdc logs` without follow mode (`-f` / `--follow`) uses grouped output for easier historical scanning, while explicit follow mode keeps live interleaved prefixed lines for per-target attribution.
-- Top-level multi-target `mdc build` (parallel mode) suppresses noisy successful BuildKit logs and prints concise `[target] build complete` summaries; failed targets still print detailed stdout/stderr plus the standard failure summary.
-- Top-level `mdc events` is serial-only for multi-target runs; if multiple targets are discovered, rerun with `--jobs 1`.
-- `mdc ps` tries `docker compose ps --format json`, merges results into one table, and falls back to stitched text when JSON is unavailable.
-- Top-level multi-target `mdc images` emits one merged table when all targets share a conservatively parseable table shape; otherwise it falls back to a deterministic stitched view that keeps one header and preserves all rows in sorted target order.
-- Exit code is non-zero if any compose target fails.
-- Ctrl-C cancels the shared run context so in-flight `docker compose` processes stop together.
-- `mdc` only parses its own flags (`--depth`, `--jobs`, `--quiet-targets`) and passes everything else through to `docker compose`.
-
-## Development
-
-Development is driven by [mise](https://mise.jdx.dev/) for tool versions and [Task](https://taskfile.dev/) for commands. `mise install` provisions Go, GoReleaser, `hk`, `golangci-lint`, and `staticcheck` pinned to the versions in `mise.toml`.
-
-```bash
 mise install        # install pinned tools
 task setup          # tidy modules and install git hooks
 task test
-task test:integration
 task lint
 task build
-task ci
+task ci             # lint and test
 ```
 
-Git hooks are managed by [hk](https://github.com/jdx/hk). `task setup` runs `hk install --mise` so pre-commit lint/format and commit-msg conventional-commit checks are wired against the mise-managed tools.
-
-`task run -- ps` forwards arguments to `go run .`.
-
-`task test:integration` requires a working local Docker Engine with `docker compose` available.
+`task run -- ps` forwards arguments to `go run .`. Git hooks are managed by [hk](https://github.com/jdx/hk); `task setup` wires pre-commit lint/format and commit-msg conventional-commit checks.
 
 ## Releases
 

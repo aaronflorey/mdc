@@ -18,13 +18,6 @@ tasks:
     cmds:
       - go test ./...
 
-  test:integration:
-    cmds:
-      - go test -tags=integration ./...
-  test:smoke:
-    cmds:
-      - go test -tags=smoke -v -timeout 30s ./...
-
   build:
     cmds:
       - mkdir -p dist

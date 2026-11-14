@@ -102,9 +102,10 @@ func (m *model) rowLine(r row) string {
 		return prefix + " " + m.bar.ViewAs(r.Percent/100)
 	}
 	text := r.Text
-	if r.Status == api.Error {
+	switch r.Status {
+	case api.Error:
 		text = Err.Render(text)
-	} else if r.Status == api.Warning {
+	case api.Warning:
 		text = Warn.Render(text)
 	}
 	if r.Details != "" {

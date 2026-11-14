@@ -166,7 +166,9 @@ func (c *projectLogs) write(w io.Writer, container, message string, status bool)
 		if status {
 			line = paint(Dim, line)
 		}
-		b.WriteString(prefix + line + "\n")
+		b.WriteString(prefix)
+		b.WriteString(line)
+		b.WriteByte('\n')
 	}
 	_, _ = io.WriteString(w, b.String())
 }

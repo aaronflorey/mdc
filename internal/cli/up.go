@@ -36,6 +36,7 @@ type upOptions struct {
 	waitTimeout        int
 	watch              bool
 	navigationMenu     bool
+	quietBuild         bool
 }
 
 func newUpCommand(app *App) *cobra.Command {
@@ -79,6 +80,7 @@ func newUpCommand(app *App) *cobra.Command {
 	flags.StringArrayVar(&opts.attach, "attach", []string{}, "Restrict attaching to the specified services. Incompatible with --attach-dependencies.")
 	flags.StringArrayVar(&opts.noAttach, "no-attach", []string{}, "Do not attach (stream logs) to the specified services")
 	flags.BoolVar(&opts.attachDependencies, "attach-dependencies", false, "Automatically attach to log output of dependent services")
+	flags.BoolVar(&opts.quietBuild, "quiet-build", false, "Suppress the build output")
 	flags.BoolVar(&opts.wait, "wait", false, "Wait for services to be running|healthy. Implies detached mode.")
 	flags.IntVar(&opts.waitTimeout, "wait-timeout", 0, "Maximum duration in seconds to wait for the project to be running|healthy")
 	flags.BoolVarP(&opts.watch, "watch", "w", false, "Watch source code and rebuild/refresh containers when files are updated.")
@@ -153,6 +155,9 @@ func (o upOptions) run(ctx context.Context, app *App, r projectRun, session *log
 	}
 
 	build := o.create.buildOptions(project.ServiceNames(), !o.noDeps)
+	if build != nil {
+		build.Quiet = o.quietBuild
+	}
 	create := o.create.apiOptions(project, r.Services, build)
 	start := api.StartOptions{
 		Project:     project,
