@@ -9,6 +9,8 @@ updates:
       prefix: "chore(deps)"
     labels:
       - dependencies
+    cooldown:
+      default-days: 7
 
   - package-ecosystem: gomod
     directory: "/"
@@ -24,3 +26,5 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    cooldown:
+      default-days: 7
