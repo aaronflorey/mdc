@@ -79,3 +79,12 @@ func TestRunFailsUnstartedTargetsOnCancel(t *testing.T) {
 		}
 	}
 }
+
+func TestRunRecordsNoteAsSuccessfulDetail(t *testing.T) {
+	outcomes := Run(context.Background(), targets("a"), 0, func(context.Context, discover.Target) error {
+		return Note("exit code 0")
+	})
+	if outcomes[0].Status != OK || outcomes[0].Detail != "exit code 0" || outcomes[0].Err != nil {
+		t.Fatalf("%+v", outcomes[0])
+	}
+}

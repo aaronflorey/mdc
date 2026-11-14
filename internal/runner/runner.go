@@ -25,6 +25,8 @@ type Outcome struct {
 	Status Status
 	// Reason explains a skipped target.
 	Reason string
+	// Detail is an optional note on a successful target.
+	Detail string
 	// Err is set for failed targets.
 	Err error
 }
@@ -39,6 +41,14 @@ func (e *skipError) Error() string { return e.reason }
 
 // Skip returns an error that marks the target as skipped rather than failed.
 func Skip(reason string) error { return &skipError{reason: reason} }
+
+type noteError struct{ detail string }
+
+func (e *noteError) Error() string { return e.detail }
+
+// Note returns an error that marks the target as successful and records detail
+// on its outcome.
+func Note(detail string) error { return &noteError{detail: detail} }
 
 // Run calls fn for every target, at most jobs at a time (jobs <= 0 means all
 // at once), and returns one Outcome per target in input order. Targets not
@@ -68,8 +78,11 @@ func Run(ctx context.Context, targets []discover.Target, jobs int, fn Func) []Ou
 			}
 
 			var skip *skipError
+			var note *noteError
 			switch err := fn(ctx, t); {
 			case err == nil:
+			case errors.As(err, &note):
+				outcomes[i].Detail = note.detail
 			case errors.As(err, &skip):
 				outcomes[i].Status, outcomes[i].Reason = Skipped, skip.reason
 			default:

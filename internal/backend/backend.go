@@ -4,6 +4,7 @@ package backend
 import (
 	"context"
 	"fmt"
+	"io"
 
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/docker/cli/cli/command"
@@ -54,6 +55,9 @@ func (b *Backend) Service(events api.EventProcessor, prompt compose.Prompt, extr
 	options := []compose.Option{
 		compose.WithEventProcessor(events),
 		compose.WithPrompt(prompt),
+		// Anything compose prints directly would tear the live view; results
+		// are reported through events and returned errors.
+		compose.WithStreams(io.Discard, io.Discard, nil),
 	}
 	if b.opts.Parallel > 0 {
 		options = append(options, compose.WithMaxConcurrency(b.opts.Parallel))

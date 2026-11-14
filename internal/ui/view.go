@@ -61,7 +61,11 @@ func projectTitle(p *projectState) string {
 func outcomeLine(p *projectState) string {
 	switch o := p.outcome; o.Status {
 	case runner.OK:
-		return OK.Render("✓") + " " + projectTitle(p)
+		line := OK.Render("✓") + " " + projectTitle(p)
+		if o.Detail != "" {
+			line += " " + Dim.Render(o.Detail)
+		}
+		return line
 	case runner.Skipped:
 		return Dim.Render("○ "+p.target.ProjectName+" "+p.target.Label) + " " + Dim.Render(o.Reason)
 	default:

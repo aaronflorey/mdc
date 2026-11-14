@@ -116,6 +116,10 @@ func (l *Live) Track(fn runner.Func) runner.Func {
 		o := runner.Run(ctx, []discover.Target{t}, 1, fn)[0]
 		l.Finish(o)
 		switch o.Status {
+		case runner.OK:
+			if o.Detail != "" {
+				return runner.Note(o.Detail)
+			}
 		case runner.Skipped:
 			return runner.Skip(o.Reason)
 		case runner.Failed:
