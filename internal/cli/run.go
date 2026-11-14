@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -28,6 +29,9 @@ type projectRun struct {
 	// whole project.
 	Services []string
 	Compose  api.Compose
+	// NewService returns another compose service for this project that has the
+	// same settings as Compose plus the extra options.
+	NewService func(extra ...compose.Option) (api.Compose, error)
 }
 
 // runOptions tune how projects are loaded and how compose is configured.
@@ -37,6 +41,9 @@ type runOptions struct {
 	// WholeProject keeps every service in the project and only enables the
 	// requested ones (for commands that act on dependents too).
 	WholeProject bool
+	// AllResources loads every resource of the projects, as if --all-resources
+	// were set.
+	AllResources bool
 	// Compose options are applied last to each project's compose service.
 	Compose []compose.Option
 }
@@ -74,7 +81,9 @@ func (a *App) plan(ctx context.Context, opts runOptions) (*plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	be, err := backend.New(a.BackendOptions())
+	backendOpts := a.BackendOptions()
+	backendOpts.AllResources = backendOpts.AllResources || opts.AllResources
+	be, err := backend.New(backendOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -139,11 +148,14 @@ func (p *plan) run(ctx context.Context, fn func(ctx context.Context, r projectRu
 			case pp.skip:
 				return runner.Skip("no matching services")
 			}
-			svc, err := p.backend.Service(live.Processor(t), live.Prompt(t), p.opts.Compose...)
+			newService := func(extra ...compose.Option) (api.Compose, error) {
+				return p.backend.Service(live.Processor(t), live.Prompt(t), append(slices.Clone(p.opts.Compose), extra...)...)
+			}
+			svc, err := newService()
 			if err != nil {
 				return err
 			}
-			return fn(ctx, projectRun{Target: t, Project: pp.project, Services: pp.services, Compose: svc})
+			return fn(ctx, projectRun{Target: t, Project: pp.project, Services: pp.services, Compose: svc, NewService: newService})
 		}))
 	})
 	if err != nil {

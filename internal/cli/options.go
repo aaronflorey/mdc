@@ -120,14 +120,12 @@ func ignoreOrphans(project *types.Project) bool {
 }
 
 // buildOptions returns the build settings create and up use for images they
-// need to build, or nil when --no-build is set. Build output is not shown.
+// need to build, or nil when --no-build is set.
 func (o createOptions) buildOptions(services []string, deps bool) *api.BuildOptions {
 	if o.noBuild {
 		return nil
 	}
 	return &api.BuildOptions{
-		Progress: "quiet",
-		Quiet:    true,
 		Services: services,
 		Deps:     deps,
 		Builder:  os.Getenv("BUILDX_BUILDER"),
@@ -172,7 +170,7 @@ func (o createOptions) apply(project *types.Project) error {
 			project.Services[name] = service
 		}
 	}
-	if err := applyPlatforms(project); err != nil {
+	if err := applyPlatforms(project, true); err != nil {
 		return err
 	}
 	for _, spec := range o.scale {
@@ -195,8 +193,9 @@ func (o createOptions) apply(project *types.Project) error {
 }
 
 // applyPlatforms resolves DOCKER_DEFAULT_PLATFORM into services that build an
-// image, and pins builds to the single platform they will run on.
-func applyPlatforms(project *types.Project) error {
+// image. Builds are pinned to the single platform the image will run on when
+// singlePlatform is set or no build platform was given.
+func applyPlatforms(project *types.Project, singlePlatform bool) error {
 	defaultPlatform := project.Environment["DOCKER_DEFAULT_PLATFORM"]
 	for name, service := range project.Services {
 		if service.Build == nil {
@@ -212,9 +211,11 @@ func applyPlatforms(project *types.Project) error {
 			if len(service.Build.Platforms) > 0 && !slices.Contains(service.Build.Platforms, service.Platform) {
 				return fmt.Errorf("service %q build configuration does not support platform: %s", name, service.Platform)
 			}
-			service.Build.Platforms = []string{service.Platform}
+			if singlePlatform || len(service.Build.Platforms) == 0 {
+				service.Build.Platforms = []string{service.Platform}
+			}
 		}
-		if len(service.Build.Platforms) > 1 {
+		if singlePlatform && len(service.Build.Platforms) > 1 {
 			// Running needs one platform; let the builder decide.
 			service.Build.Platforms = nil
 		}

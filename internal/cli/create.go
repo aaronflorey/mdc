@@ -25,7 +25,10 @@ func newCreateCommand(app *App) *cobra.Command {
 				if err := opts.apply(r.Project); err != nil {
 					return err
 				}
-				return r.Compose.Create(ctx, r.Project, opts.apiOptions(r.Project, r.Services, opts.buildOptions(r.Services, false)))
+				create := opts.apiOptions(r.Project, r.Services, opts.buildOptions(r.Services, false))
+				return captureBuildLog(create.Build, func() error {
+					return r.Compose.Create(ctx, r.Project, create)
+				})
 			})
 		},
 	}

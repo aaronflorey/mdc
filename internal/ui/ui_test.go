@@ -156,3 +156,28 @@ func TestViewFitsTerminal(t *testing.T) {
 		}
 	}
 }
+
+func TestImageBarNeverRunsBackwards(t *testing.T) {
+	p := newProjectState(target("a"))
+	p.apply(
+		api.Resource{ID: "Image web", Status: api.Working},
+		api.Resource{ID: "l1", ParentID: "Image web", Status: api.Working, Current: 100, Total: 100},
+	)
+	// Extraction restarts the layer's progress.
+	p.apply(api.Resource{ID: "l1", ParentID: "Image web", Status: api.Working, Current: 10, Total: 100})
+	if got := p.rows()[0].Percent; got != 100 {
+		t.Fatalf("percent = %v, want 100", got)
+	}
+}
+
+func TestSharedLayersBelongToEachImage(t *testing.T) {
+	p := newProjectState(target("a"))
+	p.apply(
+		api.Resource{ID: "l1", ParentID: "Image a", Status: api.Working, Current: 10, Total: 100},
+		api.Resource{ID: "l1", ParentID: "Image b", Status: api.Working, Current: 90, Total: 100},
+	)
+	rows := p.rows()
+	if len(rows) != 2 || rows[0].Percent != 10 || rows[1].Percent != 90 {
+		t.Fatalf("rows = %+v", rows)
+	}
+}

@@ -13,10 +13,14 @@ type projectState struct {
 	order   []string
 	res     map[string]api.Resource
 	outcome *runner.Outcome
+	// peak is the highest aggregate progress seen per parent. Layers restart
+	// from zero when they move from downloading to extracting, which would
+	// otherwise make the image's bar run backwards.
+	peak map[string]float64
 }
 
 func newProjectState(t discover.Target) *projectState {
-	return &projectState{target: t, res: map[string]api.Resource{}}
+	return &projectState{target: t, res: map[string]api.Resource{}, peak: map[string]float64{}}
 }
 
 func (p *projectState) running() bool { return p.outcome == nil }
@@ -25,13 +29,23 @@ func (p *projectState) running() bool { return p.outcome == nil }
 // once done, so previously seen totals are kept and done resources are
 // treated as complete.
 func (p *projectState) apply(events ...api.Resource) {
+	touched := map[string]bool{}
+	defer func() {
+		for parent := range touched {
+			p.trackPeak(parent)
+		}
+	}()
 	for _, e := range events {
+		key := e.ID
 		if e.ParentID != "" {
 			if _, ok := p.res[e.ParentID]; !ok {
-				p.add(api.Resource{ID: e.ParentID, Text: e.ParentID, Status: api.Working})
+				p.add(e.ParentID, api.Resource{ID: e.ParentID, Text: e.ParentID, Status: api.Working})
 			}
+			// Images in one project can share layers, so a layer is only
+			// unique within its parent.
+			key = e.ParentID + "\x00" + e.ID
 		}
-		old, seen := p.res[e.ID]
+		old, seen := p.res[key]
 		if seen {
 			if e.Total == 0 {
 				e.Total = old.Total
@@ -44,16 +58,30 @@ func (p *projectState) apply(events ...api.Resource) {
 			e.Current = e.Total
 		}
 		if seen {
-			p.res[e.ID] = e
+			p.res[key] = e
 		} else {
-			p.add(e)
+			p.add(key, e)
+		}
+		if e.ParentID != "" {
+			touched[e.ParentID] = true
 		}
 	}
 }
 
-func (p *projectState) add(r api.Resource) {
-	p.order = append(p.order, r.ID)
-	p.res[r.ID] = r
+// trackPeak records the aggregate progress of parent from its children.
+func (p *projectState) trackPeak(parent string) {
+	var kids []api.Resource
+	for _, key := range p.order {
+		if r := p.res[key]; r.ParentID == parent {
+			kids = append(kids, r)
+		}
+	}
+	p.peak[parent] = max(p.peak[parent], aggregatePercent(p.res[parent], kids))
+}
+
+func (p *projectState) add(key string, r api.Resource) {
+	p.order = append(p.order, key)
+	p.res[key] = r
 }
 
 // row is one displayable line of a running project.
@@ -90,7 +118,7 @@ func (p *projectState) rows() []row {
 			rows = append(rows, row{Resource: r})
 			continue
 		}
-		rows = append(rows, row{Resource: r, Bar: true, Percent: aggregatePercent(r, kids)})
+		rows = append(rows, row{Resource: r, Bar: true, Percent: max(p.peak[id], aggregatePercent(r, kids))})
 		for _, k := range kids {
 			if k.Status == api.Error {
 				rows = append(rows, row{Resource: k, Indent: 1})

@@ -145,16 +145,18 @@ func (o upOptions) run(ctx context.Context, app *App, r projectRun) error {
 
 	build := o.create.buildOptions(project.ServiceNames(), !o.noDeps)
 	create := o.create.apiOptions(project, r.Services, build)
-	if o.noStart {
-		return r.Compose.Create(ctx, project, create)
-	}
-	return r.Compose.Up(ctx, project, api.UpOptions{
-		Create: create,
-		Start: api.StartOptions{
-			Project:     project,
-			Wait:        o.wait,
-			WaitTimeout: waitTimeout(o.waitTimeout),
-			Services:    r.Services,
-		},
+	return captureBuildLog(create.Build, func() error {
+		if o.noStart {
+			return r.Compose.Create(ctx, project, create)
+		}
+		return r.Compose.Up(ctx, project, api.UpOptions{
+			Create: create,
+			Start: api.StartOptions{
+				Project:     project,
+				Wait:        o.wait,
+				WaitTimeout: waitTimeout(o.waitTimeout),
+				Services:    r.Services,
+			},
+		})
 	})
 }
