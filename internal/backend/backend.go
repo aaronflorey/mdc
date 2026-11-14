@@ -13,6 +13,7 @@ import (
 	"github.com/docker/cli/cli/flags"
 	"github.com/docker/compose/v5/pkg/api"
 	"github.com/docker/compose/v5/pkg/compose"
+	"github.com/moby/moby/client"
 
 	"github.com/aaronflorey/mdc/internal/discover"
 	"github.com/aaronflorey/mdc/internal/version"
@@ -50,6 +51,9 @@ func New(opts Options) (*Backend, error) {
 	}
 	return &Backend{cli: dockerCli, opts: opts, loader: loader}, nil
 }
+
+// Client is the Docker engine client shared by all targets.
+func (b *Backend) Client() client.APIClient { return b.cli.Client() }
 
 // Service returns a compose service dedicated to one target, reporting progress
 // to events and asking questions through prompt. Extra options are applied last.

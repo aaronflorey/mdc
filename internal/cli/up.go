@@ -3,11 +3,16 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
+	"maps"
+	"slices"
+	"strings"
 
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/docker/compose/v5/pkg/api"
 	"github.com/spf13/cobra"
 
+	"github.com/aaronflorey/mdc/internal/discover"
 	"github.com/aaronflorey/mdc/internal/runner"
 )
 
@@ -48,12 +53,12 @@ func newUpCommand(app *App) *cobra.Command {
 			return opts.validate()
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if !opts.noStart && !opts.detach {
-				return errors.New("attached up is not supported yet; use -d to run containers in the background")
-			}
 			runOpts := opts.create.runOptions(args)
+			if !opts.noStart && !opts.detach {
+				return opts.runAttached(cmd.Context(), app, runOpts)
+			}
 			return app.runEach(cmd.Context(), runOpts, func(ctx context.Context, r projectRun) error {
-				return opts.run(ctx, app, r)
+				return opts.run(ctx, app, r, nil)
 			})
 		},
 	}
@@ -107,6 +112,9 @@ func (o *upOptions) validate() error {
 		}
 		return errors.New("--detach cannot be combined with --abort-on-container-exit, --abort-on-container-failure, --attach, --attach-dependencies or --watch")
 	}
+	if len(o.attach) > 0 && o.attachDependencies {
+		return errors.New("cannot combine --attach and --attach-dependencies")
+	}
 	switch {
 	case o.create.noInherit && o.create.noRecreate:
 		return errors.New("--no-recreate and --renew-anon-volumes are incompatible")
@@ -120,7 +128,13 @@ func (o *upOptions) validate() error {
 	return o.create.validate()
 }
 
-func (o upOptions) run(ctx context.Context, app *App, r projectRun) error {
+// logSession is how an attached up streams the logs of one project.
+type logSession struct {
+	consumer api.LogConsumer
+	phase    phase
+}
+
+func (o upOptions) run(ctx context.Context, app *App, r projectRun, session *logSession) error {
 	project := r.Project
 	if !app.BackendOptions().AllResources && len(project.Services) == 0 {
 		return runner.Skip("no service selected")
@@ -137,26 +151,151 @@ func (o upOptions) run(ctx context.Context, app *App, r projectRun) error {
 			return err
 		}
 	}
-	if o.exitCodeFrom != "" {
-		if _, err := project.GetService(o.exitCodeFrom); err != nil {
-			return err
-		}
-	}
 
 	build := o.create.buildOptions(project.ServiceNames(), !o.noDeps)
 	create := o.create.apiOptions(project, r.Services, build)
+	start := api.StartOptions{
+		Project:     project,
+		Wait:        o.wait,
+		WaitTimeout: waitTimeout(o.waitTimeout),
+		Services:    r.Services,
+	}
 	return captureBuildLog(create.Build, func() error {
-		if o.noStart {
+		switch {
+		case o.noStart:
 			return r.Compose.Create(ctx, project, create)
+		case session != nil:
+			o.attachTo(&start, project, r.Services, session)
+			return o.upAttached(ctx, r, project, create, start, session.phase)
 		}
-		return r.Compose.Up(ctx, project, api.UpOptions{
-			Create: create,
-			Start: api.StartOptions{
-				Project:     project,
-				Wait:        o.wait,
-				WaitTimeout: waitTimeout(o.waitTimeout),
-				Services:    r.Services,
-			},
-		})
+		return r.Compose.Up(ctx, project, api.UpOptions{Create: create, Start: start})
 	})
+}
+
+// attachTo makes start stream the logs of the services this project attaches.
+func (o upOptions) attachTo(start *api.StartOptions, project *types.Project, services []string, session *logSession) {
+	start.Attach = session.consumer
+	start.AttachTo = o.attachedServices(project, services)
+	start.OnExit = o.onExit()
+	start.Watch = o.watch
+	if _, err := project.GetService(o.exitCodeFrom); err == nil {
+		start.ExitCodeFrom = o.exitCodeFrom
+	}
+}
+
+// upAttached runs up in the foreground. Compose handles interrupts itself
+// once the session starts, so it gets a context that only follows the
+// interrupt of the progress phase.
+func (o upOptions) upAttached(ctx context.Context, r projectRun, project *types.Project, create api.CreateOptions, start api.StartOptions, ph phase) error {
+	upCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancel()
+	stop := context.AfterFunc(ctx, func() {
+		if !ph.Streaming() {
+			cancel()
+		}
+	})
+	defer stop()
+
+	if len(start.AttachTo) == 0 {
+		// Nothing to follow in this project: start it in the background.
+		start.Attach = nil
+	}
+	return r.Compose.Up(upCtx, project, api.UpOptions{Create: create, Start: start})
+}
+
+func (o upOptions) onExit() api.Cascade {
+	switch {
+	case o.cascadeStop:
+		return api.CascadeStop
+	case o.cascadeFail:
+		return api.CascadeFail
+	}
+	return api.CascadeIgnore
+}
+
+// attachedServices returns the services of the project whose logs up follows:
+// the ones named with --attach, or else the services being launched (and their
+// dependencies with --attach-dependencies) that have not opted out in the
+// Compose file, minus the ones excluded with --no-attach.
+func (o upOptions) attachedServices(project *types.Project, services []string) []string {
+	attach := map[string]bool{}
+	if len(o.attach) > 0 {
+		for _, name := range o.attach {
+			if _, ok := project.Services[name]; ok {
+				attach[name] = true
+			}
+		}
+	} else {
+		dependencies := types.IgnoreDependencies
+		if o.attachDependencies {
+			dependencies = types.IncludeDependencies
+		}
+		_ = project.ForEachService(services, func(name string, s *types.ServiceConfig) error {
+			if s.Attach == nil || *s.Attach {
+				attach[name] = true
+			}
+			return nil
+		}, dependencies)
+	}
+	for _, name := range o.noAttach {
+		delete(attach, name)
+	}
+	return slices.Sorted(maps.Keys(attach))
+}
+
+// runAttached creates and starts every project under the live view, then
+// follows the logs of all of them in one stream until they stop.
+func (o upOptions) runAttached(ctx context.Context, app *App, runOpts runOptions) error {
+	p, err := app.plan(ctx, runOpts)
+	if err != nil {
+		return err
+	}
+	if err := o.checkNames(p); err != nil {
+		return err
+	}
+	stream := newLogStream(!o.noColor, !o.noPrefix, o.timestamp)
+	outcomes, err := p.runPhased(ctx, phasedOptions{
+		ReadyOnUp: true,
+		Late: func(t discover.Target, r api.Resource) {
+			stream.Notice(t.ProjectName, r.Text)
+		},
+	}, func(ctx context.Context, r projectRun, ph phase) error {
+		session := &logSession{consumer: stream.Consumer(r.Project.Name, replicasOf(r.Project)), phase: ph}
+		return o.run(ctx, app, r, session)
+	})
+	if err != nil {
+		return err
+	}
+	for _, out := range outcomes {
+		if code, ok := exitCodeOf(out.Err); ok && code != 0 {
+			return ExitError{Code: code}
+		}
+	}
+	return runner.Err(outcomes)
+}
+
+// checkNames rejects --attach and --exit-code-from services no project defines.
+func (o upOptions) checkNames(p *plan) error {
+	defined := map[string]bool{}
+	for _, pp := range p.projects {
+		if pp.project == nil {
+			continue
+		}
+		for name := range pp.project.Services {
+			defined[name] = true
+		}
+	}
+	var unknown []string
+	for _, name := range o.attach {
+		if !defined[name] {
+			unknown = append(unknown, name)
+		}
+	}
+	if len(unknown) > 0 {
+		return fmt.Errorf("cannot attach to services not included in up: %s", strings.Join(unknown, ", "))
+	}
+	if o.exitCodeFrom != "" && !defined[o.exitCodeFrom] {
+		return fmt.Errorf("no such service: %s", o.exitCodeFrom)
+	}
+	return nil
 }

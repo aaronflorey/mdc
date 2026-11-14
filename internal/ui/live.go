@@ -23,6 +23,15 @@ type Live struct {
 	// promptMu serialises questions so only one is on screen at a time.
 	promptMu sync.Mutex
 	ctx      context.Context
+
+	ran      chan programResult
+	stopOnce sync.Once
+	stopErr  error
+}
+
+type programResult struct {
+	model tea.Model
+	err   error
 }
 
 // RunLive shows a live view of targets while fn runs, then prints the final
@@ -51,32 +60,36 @@ func RunLive(ctx context.Context, targets []discover.Target, fn func(ctx context
 		return msg
 	}))
 
-	live := &Live{program: program, index: make(map[discover.Target]int, len(targets)), ctx: ctx}
+	live := &Live{program: program, index: make(map[discover.Target]int, len(targets)), ctx: ctx, ran: make(chan programResult, 1)}
 	for i, t := range targets {
 		live.index[t] = i
 	}
-
-	type result struct {
-		model tea.Model
-		err   error
-	}
-	ran := make(chan result, 1)
 	go func() {
 		final, err := program.Run()
-		ran <- result{final, err}
+		live.ran <- programResult{final, err}
 	}()
 
 	outcomes := fn(ctx, live)
 	for _, o := range outcomes {
 		live.Finish(o)
 	}
-	program.Send(doneMsg{})
-	res := <-ran
+	return outcomes, live.Stop()
+}
 
-	if res.model != nil {
-		_, _ = lipgloss.Fprintln(os.Stdout, res.model.(*model).summary())
-	}
-	return outcomes, res.err
+// Stop ends the view and prints the summary of the targets finished so far.
+// Work still running keeps its processors, which then report nowhere. It is
+// called by RunLive once fn returns; call it earlier to hand the terminal to
+// output that follows the progress, such as logs.
+func (l *Live) Stop() error {
+	l.stopOnce.Do(func() {
+		l.program.Send(doneMsg{})
+		res := <-l.ran
+		l.stopErr = res.err
+		if res.model != nil {
+			_, _ = lipgloss.Fprintln(os.Stdout, res.model.(*model).summary())
+		}
+	})
+	return l.stopErr
 }
 
 // Processor returns the event processor to give backend.Service for t.

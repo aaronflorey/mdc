@@ -30,6 +30,10 @@ func (quietEvents) Start(context.Context, string) {}
 func (quietEvents) Done(string, bool)             {}
 func (quietEvents) On(...api.Resource)            {}
 
+// declinePrompt answers compose questions with their default, for commands
+// that have no view to ask in.
+func declinePrompt(_ string, def bool) (bool, error) { return def, nil }
+
 // collect runs fn for every project concurrently (bounded by --jobs) without
 // the live view, so the caller can render everything once.
 func collect[T any](ctx context.Context, a *App, opts runOptions, fn func(ctx context.Context, r projectRun) (T, error)) ([]snapshot[T], error) {
@@ -39,8 +43,7 @@ func collect[T any](ctx context.Context, a *App, opts runOptions, fn func(ctx co
 	}
 	values := make([]T, len(p.targets))
 	outcomes := runner.Run(ctx, p.targets, a.Jobs(), func(ctx context.Context, t discover.Target) error {
-		decline := func(_ string, def bool) (bool, error) { return def, nil }
-		return p.runProject(ctx, t, quietEvents{}, decline, func(ctx context.Context, r projectRun) (err error) {
+		return p.runProject(ctx, t, quietEvents{}, declinePrompt, func(ctx context.Context, r projectRun) (err error) {
 			values[p.index(t)], err = fn(ctx, r)
 			return err
 		})

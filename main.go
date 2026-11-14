@@ -48,6 +48,9 @@ func run() (code int) {
 	if err == nil {
 		return 0
 	}
+	if code, ok := cli.ExitCode(err); ok {
+		return code
+	}
 	if errors.Is(err, context.Canceled) {
 		return exitInterrupt
 	}
