@@ -55,7 +55,7 @@ func (m *model) section(p *projectState) section {
 }
 
 func projectTitle(p *projectState) string {
-	return Header.Render(p.target.ProjectName) + " " + Dim.Render(p.target.Label)
+	return ProjectTitle(p.target)
 }
 
 func outcomeLine(p *projectState) string {
@@ -67,7 +67,7 @@ func outcomeLine(p *projectState) string {
 		}
 		return line
 	case runner.Skipped:
-		return Dim.Render("○ "+p.target.ProjectName+" "+p.target.Label) + " " + Dim.Render(o.Reason)
+		return SkippedLine(p.target, o.Reason)
 	default:
 		return Err.Render("✗") + " " + projectTitle(p) + " " + Err.Render(firstLine(o.Err.Error()))
 	}
@@ -238,7 +238,7 @@ func (m *model) summary() string {
 		}
 		lines = append(lines, outcomeLine(p))
 		if p.outcome.Status == runner.Failed {
-			failures = append(failures, Err.Render("✗ ")+projectTitle(p)+"\n"+indent(strings.TrimSpace(p.outcome.Err.Error())))
+			failures = append(failures, Failure(p.target, p.outcome.Err))
 		}
 	}
 	lines = append(lines, "", m.countsLine())

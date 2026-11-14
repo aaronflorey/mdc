@@ -5,7 +5,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 
+	"github.com/compose-spec/compose-go/v2/cli"
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/cli/cli/flags"
@@ -72,14 +74,44 @@ func (b *Backend) Service(events api.EventProcessor, prompt compose.Prompt, extr
 // project is narrowed to them and their dependencies and the profiles they
 // need are enabled.
 func (b *Backend) LoadProject(ctx context.Context, t discover.Target, services ...string) (*types.Project, error) {
+	return b.LoadProjectWith(ctx, t, nil, services...)
+}
+
+// LoadProjectWith is LoadProject with extra compose-go loader options.
+func (b *Backend) LoadProjectWith(ctx context.Context, t discover.Target, fns []cli.ProjectOptionsFn, services ...string) (*types.Project, error) {
 	return b.loader.LoadProject(ctx, api.ProjectLoadOptions{
-		ProjectName:   t.ProjectName,
-		ConfigPaths:   []string{t.File},
-		WorkingDir:    t.Dir,
-		EnvFiles:      b.opts.EnvFiles,
-		Profiles:      b.opts.Profiles,
-		Services:      services,
-		All:           b.opts.AllResources,
-		Compatibility: b.opts.Compatibility,
+		ProjectOptionsFns: fns,
+		ProjectName:       t.ProjectName,
+		ConfigPaths:       []string{t.File},
+		WorkingDir:        t.Dir,
+		EnvFiles:          b.opts.EnvFiles,
+		Profiles:          b.opts.Profiles,
+		Services:          services,
+		All:               b.opts.AllResources,
+		Compatibility:     b.opts.Compatibility,
 	})
+}
+
+// LoadModel loads the target's compose model as a raw map, without building a
+// project from it, so options such as skipping interpolation keep the file's
+// own values.
+func (b *Backend) LoadModel(ctx context.Context, t discover.Target, fns ...cli.ProjectOptionsFn) (map[string]any, error) {
+	fns = append(slices.Clone(fns),
+		cli.WithWorkingDirectory(t.Dir),
+		cli.WithOsEnv,
+		cli.WithEnvFiles(b.opts.EnvFiles...),
+		cli.WithDotEnv,
+		cli.WithDefaultProfiles(b.opts.Profiles...),
+		cli.WithName(t.ProjectName),
+	)
+	options, err := cli.NewProjectOptions([]string{t.File}, fns...)
+	if err != nil {
+		return nil, err
+	}
+	return options.LoadModel(ctx)
+}
+
+// WithImageDigests pins the project's image tags to their registry digests.
+func (b *Backend) WithImageDigests(ctx context.Context, project *types.Project) (*types.Project, error) {
+	return project.WithImagesResolved(compose.ImageDigestResolver(ctx, b.cli.ConfigFile(), b.cli.Client()))
 }

@@ -29,6 +29,8 @@ type projectRun struct {
 	// whole project.
 	Services []string
 	Compose  api.Compose
+	// Backend loads the project again with other settings.
+	Backend *backend.Backend
 	// NewService returns another compose service for this project that has the
 	// same settings as Compose plus the extra options.
 	NewService func(extra ...compose.Option) (api.Compose, error)
@@ -135,31 +137,36 @@ func warnMissing(names []string) {
 
 // run executes fn for each project under the live view.
 func (p *plan) run(ctx context.Context, fn func(ctx context.Context, r projectRun) error) error {
-	index := make(map[discover.Target]int, len(p.targets))
-	for i, t := range p.targets {
-		index[t] = i
-	}
 	outcomes, err := ui.RunLive(ctx, p.targets, func(ctx context.Context, live *ui.Live) []runner.Outcome {
 		return runner.Run(ctx, p.targets, p.app.Jobs(), live.Track(func(ctx context.Context, t discover.Target) error {
-			pp := p.projects[index[t]]
-			switch {
-			case pp.err != nil:
-				return pp.err
-			case pp.skip:
-				return runner.Skip("no matching services")
-			}
-			newService := func(extra ...compose.Option) (api.Compose, error) {
-				return p.backend.Service(live.Processor(t), live.Prompt(t), append(slices.Clone(p.opts.Compose), extra...)...)
-			}
-			svc, err := newService()
-			if err != nil {
-				return err
-			}
-			return fn(ctx, projectRun{Target: t, Project: pp.project, Services: pp.services, Compose: svc, NewService: newService})
+			return p.runProject(ctx, t, live.Processor(t), live.Prompt(t), fn)
 		}))
 	})
 	if err != nil {
 		return err
 	}
 	return runner.Err(outcomes)
+}
+
+// runProject calls fn for t, or returns the error or skip that applies instead.
+func (p *plan) runProject(ctx context.Context, t discover.Target, events api.EventProcessor, prompt compose.Prompt, fn func(ctx context.Context, r projectRun) error) error {
+	pp := p.projects[p.index(t)]
+	switch {
+	case pp.err != nil:
+		return pp.err
+	case pp.skip:
+		return runner.Skip("no matching services")
+	}
+	newService := func(extra ...compose.Option) (api.Compose, error) {
+		return p.backend.Service(events, prompt, append(slices.Clone(p.opts.Compose), extra...)...)
+	}
+	svc, err := newService()
+	if err != nil {
+		return err
+	}
+	return fn(ctx, projectRun{Target: t, Project: pp.project, Services: pp.services, Compose: svc, Backend: p.backend, NewService: newService})
+}
+
+func (p *plan) index(t discover.Target) int {
+	return slices.Index(p.targets, t)
 }
