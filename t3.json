@@ -1,0 +1,49 @@
+{
+  "$schema": "https://t3.codes/schema/t3.json",
+  "scripts": [
+    {
+      "name": "build",
+      "command": "mise run build"
+    },
+    {
+      "name": "check",
+      "command": "mise run check"
+    },
+    {
+      "name": "ci",
+      "command": "mise run ci"
+    },
+    {
+      "name": "fix",
+      "command": "mise run fix"
+    },
+    {
+      "name": "lint",
+      "command": "mise run lint"
+    },
+    {
+      "name": "release:snapshot",
+      "command": "mise run release:snapshot"
+    },
+    {
+      "name": "run",
+      "command": "mise run run"
+    },
+    {
+      "name": "setup",
+      "command": "mise run setup"
+    },
+    {
+      "name": "test",
+      "command": "mise run test"
+    },
+    {
+      "name": "test:integration",
+      "command": "mise run test:integration"
+    },
+    {
+      "name": "test:smoke",
+      "command": "mise run test:smoke"
+    }
+  ]
+}

@@ -1,104 +1,98 @@
 # mdc
 
-Run one `docker compose` command across every compose project in a directory tree.
+Manage a whole directory of Docker Compose projects with one command.
 
 [![License](https://img.shields.io/github/license/aaronflorey/mdc)](LICENSE)
 [![CI](https://github.com/aaronflorey/mdc/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/aaronflorey/mdc/actions/workflows/ci.yml)
 [![Latest Release](https://img.shields.io/github/v/release/aaronflorey/mdc?sort=semver)](https://github.com/aaronflorey/mdc/releases)
 
-`mdc` discovers `compose.yaml`, `compose.yml`, `docker-compose.yaml`, and `docker-compose.yml`, picks one canonical file per directory, and runs the same `docker compose` command for each target.
+If you keep many compose projects side by side, say one folder per service or per client, `mdc` saves you from `cd`-ing into each one. Run `mdc up -d` in the parent folder and every project starts together. You get one live view with a section per project and a progress bar per image.
 
-## Installation
+```text
+~/stacks
+├── api/compose.yaml
+├── db/compose.yaml
+└── monitoring/docker-compose.yml
+```
+
+`mdc` speaks the same commands and flags as `docker compose`. It adds the things you need once there are several projects: discovery, concurrency, merged tables and prefixed logs.
+
+## Requirements
+
+- A running Docker Engine. `mdc` uses your current Docker context, including `DOCKER_HOST` and `DOCKER_CONTEXT`.
+- An interactive terminal. `mdc` is built for people, not scripts, so it exits with an error if you pipe or redirect its output.
+
+You don't need the `docker compose` plugin, because `mdc` includes Compose itself.
+
+## Install
 
 ```bash
 # Homebrew
 brew install aaronflorey/tap/mdc
 
-# Go
+# Go 1.26.10 or newer
 go install github.com/aaronflorey/mdc@latest
 ```
 
-Prebuilt binaries are also published on the [GitHub releases page](https://github.com/aaronflorey/mdc/releases).
+Prebuilt binaries for Linux, macOS and Windows are on the [releases page](https://github.com/aaronflorey/mdc/releases).
 
-## Quick Start
+Check the install:
+
+```bash
+mdc version
+```
+
+## Quick start
+
+Go to the folder that contains your projects:
+
+```bash
+cd ~/stacks
+```
+
+See which projects `mdc` found:
+
+```bash
+mdc ls -a
+```
+
+You get one row per project. Projects that have never been started show as `not created`.
+
+Start everything in the background:
+
+```bash
+mdc up -d
+```
+
+While images are pulled, each project has its own section with a progress bar per image. As each project finishes, its section shrinks to a single line. When all are done, a summary lists which projects succeeded, were skipped and failed.
+
+See every container in one table:
 
 ```bash
 mdc ps
-mdc up -d
-mdc --depth 2 pull
-mdc --jobs 4 logs --tail 50
-mdc --ansi never ps
 ```
 
-## Usage
+Follow the logs of every project. Each line is prefixed with `project/service`. Press Ctrl-C to stop.
 
 ```bash
-mdc [mdc flags] <docker compose args...>
+mdc logs -f
 ```
 
-## Flags
-
-- `--depth`: scan depth (`0` = current directory only, default `1`)
-- `--jobs`: max concurrent `docker compose` processes (`0` = all targets)
-- `--quiet-targets`: suppress per-target section headers; merged tables, live prefixes, and completion labels retain attribution
-
-## Setup
+Stop and remove everything:
 
 ```bash
-git clone https://github.com/aaronflorey/mdc.git
-cd mdc
-mise install
-task setup
-task ci
+mdc down
 ```
 
-## How It Works
+## Next steps
 
-- Discovery starts in the current directory and walks child directories up to `--depth`.
-- If a directory has multiple compose files, this precedence is used:
-  1. `compose.yaml`
-  2. `compose.yml`
-  3. `docker-compose.yaml`
-  4. `docker-compose.yml`
-- `mdc` preserves the target directory basename as the Compose project name when it is unique, and switches to a deterministic unique name only when duplicate basenames would collide.
-- Most non-`ps` commands print grouped output per project in sorted directory order.
-- Top-level multi-target detached `mdc up -d` keeps one live status line per target on TTYs so concurrent Docker progress stays stable; non-TTY output falls back to grouped summaries, and failed targets still print grouped details. Attached multi-target `mdc up` keeps live target-prefixed output.
-- Top-level multi-target `mdc logs` without follow mode (`-f` / `--follow`) uses grouped output for easier historical scanning, while explicit follow mode keeps live interleaved prefixed lines for per-target attribution.
-- Top-level multi-target `mdc build` (parallel mode) suppresses noisy successful BuildKit logs and prints concise `[target] build complete` summaries; failed targets still print detailed stdout/stderr plus the standard failure summary.
-- Top-level `mdc events` is serial-only for multi-target runs; if multiple targets are discovered, rerun with `--jobs 1`.
-- `mdc ps` tries `docker compose ps --format json`, merges results into one table, and falls back to stitched text when JSON is unavailable.
-- Top-level multi-target `mdc images` emits one merged table when all targets share a conservatively parseable table shape; otherwise it falls back to a deterministic stitched view that keeps one header and preserves all rows in sorted target order.
-- Exit code is non-zero if any compose target fails.
-- Ctrl-C cancels the shared run context so in-flight `docker compose` processes stop together.
-- `mdc` only parses its own flags (`--depth`, `--jobs`, `--quiet-targets`) and passes everything else through to `docker compose`.
+- [Usage guide](docs/usage.md): target one service across projects, control which folders are scanned, set defaults, and more.
+- [Reference](docs/reference.md): discovery rules, global flags, configuration, commands, and exit codes.
+- Run `mdc <command> --help` for every flag of a command.
 
-## Development
+## Project files
 
-Development is driven by [mise](https://mise.jdx.dev/) for tool versions and [Task](https://taskfile.dev/) for commands. `mise install` provisions Go, GoReleaser, `hk`, `golangci-lint`, and `staticcheck` pinned to the versions in `mise.toml`.
-
-```bash
-mise install        # install pinned tools
-task setup          # tidy modules and install git hooks
-task test
-task test:integration
-task lint
-task build
-task ci
-```
-
-Git hooks are managed by [hk](https://github.com/jdx/hk). `task setup` runs `hk install --mise` so pre-commit lint/format and commit-msg conventional-commit checks are wired against the mise-managed tools.
-
-`task run -- ps` forwards arguments to `go run .`.
-
-`task test:integration` requires a working local Docker Engine with `docker compose` available.
-
-## Releases
-
-Releases use `release-please` for versioning and changelog management. Merged Conventional Commits are collected into a release PR, and merging that PR creates a `vX.Y.Z` tag, publishes release archives with GoReleaser, and updates the `aaronflorey/homebrew-tap` formula.
-
-## Project Files
-
-- [Contributing Guide](CONTRIBUTING.md)
-- [Security Policy](SECURITY.md)
-- [Code of Conduct](CODE_OF_CONDUCT.md)
-- [MIT License](LICENSE)
+- [Contributing guide](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
+- [Code of conduct](CODE_OF_CONDUCT.md)
+- [MIT license](LICENSE)

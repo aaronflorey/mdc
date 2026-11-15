@@ -1,0 +1,347 @@
+version: 1
+skills:
+    https://github.com/jeffallan/claude-skills::architecture-designer:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/architecture-designer,/home/aaron/Code/multi-docker-compose/.opencode/skills/architecture-designer
+        hash: db02ef77004316348e146a61dbd29652a5ecbddbb06299c628561757e37933ae
+        skill: architecture-designer
+        description: '---'
+        source: https://github.com/jeffallan/claude-skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/jeffallan/claude-skills::cli-developer:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/cli-developer,/home/aaron/Code/multi-docker-compose/.opencode/skills/cli-developer
+        hash: a229e3a01068edc0a9b24929a16789404a1597add6769ebf25809b54b8496ac2
+        skill: cli-developer
+        description: '---'
+        source: https://github.com/jeffallan/claude-skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/jeffallan/claude-skills::code-documenter:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/code-documenter,/home/aaron/Code/multi-docker-compose/.opencode/skills/code-documenter
+        hash: 3f29c96402e3d6387e366f7e6d75d756635b0d33cdd123c198a8dc7d1fcfcc10
+        skill: code-documenter
+        description: '---'
+        source: https://github.com/jeffallan/claude-skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/jeffallan/claude-skills::code-reviewer:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/code-reviewer,/home/aaron/Code/multi-docker-compose/.opencode/skills/code-reviewer
+        hash: 4969941121e6fd8c8f1e8165465ce4b62829f2150e325a72cac20c2ab369a41c
+        skill: code-reviewer
+        description: '---'
+        source: https://github.com/jeffallan/claude-skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/jeffallan/claude-skills::golang-pro:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/golang-pro,/home/aaron/Code/multi-docker-compose/.opencode/skills/golang-pro
+        hash: 278d36d1e09c65924d166fd57566887daff1aefd8711130d8c0c58c0fe296fed
+        skill: golang-pro
+        description: '---'
+        source: https://github.com/jeffallan/claude-skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/jeffallan/claude-skills::security-reviewer:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/security-reviewer,/home/aaron/Code/multi-docker-compose/.opencode/skills/security-reviewer
+        hash: 890134ffe4e426d53579211800f03da1a80ce9066ff4d2a7061dc340daba0220
+        skill: security-reviewer
+        description: '---'
+        source: https://github.com/jeffallan/claude-skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/jeffallan/claude-skills::test-master:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/test-master,/home/aaron/Code/multi-docker-compose/.opencode/skills/test-master
+        hash: 6f79d9073ba0eb30889b41edbbe03eea359978608d00a2731fc83805fa798ee1
+        skill: test-master
+        description: '---'
+        source: https://github.com/jeffallan/claude-skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/jeffallan/claude-skills::the-fool:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/the-fool,/home/aaron/Code/multi-docker-compose/.opencode/skills/the-fool
+        hash: 6689e944330f489c3fcdd04b0880feee55fd574c12f64bb118a6dcad25a30705
+        skill: the-fool
+        description: '---'
+        source: https://github.com/jeffallan/claude-skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::ask-matt:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/ask-matt,/home/aaron/Code/multi-docker-compose/.opencode/skills/ask-matt
+        hash: 274dda1f5c8b105595a8906102e45f08eca92598ffeca76769d38d3bb45c2571
+        skill: ask-matt
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::claude-handoff:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/claude-handoff,/home/aaron/Code/multi-docker-compose/.opencode/skills/claude-handoff
+        hash: 8a952fc5e03a81fd3767f20c04d22a604154f6ecd43da7eb1f046989346c2bd6
+        skill: claude-handoff
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::code-review:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/code-review,/home/aaron/Code/multi-docker-compose/.opencode/skills/code-review
+        hash: 45b9d5e7742f65efda4f5fc53d377f50b451da3687ded48f41b7ae565f8742c8
+        skill: code-review
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::codebase-design:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/codebase-design,/home/aaron/Code/multi-docker-compose/.opencode/skills/codebase-design
+        hash: d2c52f5938ce4f570f16bd8b1c194b07524b57da046a86be1617b390f14f6409
+        skill: codebase-design
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::diagnosing-bugs:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/diagnosing-bugs,/home/aaron/Code/multi-docker-compose/.opencode/skills/diagnosing-bugs
+        hash: 7cce376c32380dcc16c8f91cf249b5a317575cf464273b85bde762b9278f63ce
+        skill: diagnosing-bugs
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::domain-modeling:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/domain-modeling,/home/aaron/Code/multi-docker-compose/.opencode/skills/domain-modeling
+        hash: 6bcb9c6af3a7a220d40eacf4a7f025501062d8b795c8c00e74991e7621761504
+        skill: domain-modeling
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::git-guardrails-claude-code:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/git-guardrails-claude-code,/home/aaron/Code/multi-docker-compose/.opencode/skills/git-guardrails-claude-code
+        hash: 6f9d49e1517d156d90b9ad084470adb946ad5aabddf0f6782d11e5221a3c6b00
+        skill: git-guardrails-claude-code
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::grill-me:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/grill-me,/home/aaron/Code/multi-docker-compose/.opencode/skills/grill-me
+        hash: 000514e9633b1a2df8bef98549e99b6eaf1a8c3fabfad0e3b328440b3b226c90
+        skill: grill-me
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::grill-with-docs:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/grill-with-docs,/home/aaron/Code/multi-docker-compose/.opencode/skills/grill-with-docs
+        hash: 84554e18aac963e26214159bfb522ddbd72dab710f43176727ca14f432033567
+        skill: grill-with-docs
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::grilling:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/grilling,/home/aaron/Code/multi-docker-compose/.opencode/skills/grilling
+        hash: f82bb664166568b1d7e0323ea13b45b5df4a096bb6b25de7a946e0e58de0529d
+        skill: grilling
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::handoff:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/handoff,/home/aaron/Code/multi-docker-compose/.opencode/skills/handoff
+        hash: c97a305f5ca0b6fa21ca82a009ac5a553acd02aab63cf59de939f75ac7797393
+        skill: handoff
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::implement:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/implement,/home/aaron/Code/multi-docker-compose/.opencode/skills/implement
+        hash: 1a7a56bca542f46ff8e42fa5ddd293dab21b38b6dad57e1bf3e76d12e41c5fc2
+        skill: implement
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::improve-codebase-architecture:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/improve-codebase-architecture,/home/aaron/Code/multi-docker-compose/.opencode/skills/improve-codebase-architecture
+        hash: 98ca22a0717a1e659e9f4714d2c7fa27afdd3497243cd2290fe5a4e04e111e78
+        skill: improve-codebase-architecture
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::loop-me:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/loop-me,/home/aaron/Code/multi-docker-compose/.opencode/skills/loop-me
+        hash: 345f6ac36d702c8190f487931770f12f9e5349f24dd7b4b238689a325b455e04
+        skill: loop-me
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::migrate-to-shoehorn:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/migrate-to-shoehorn,/home/aaron/Code/multi-docker-compose/.opencode/skills/migrate-to-shoehorn
+        hash: 292b384215d803b52e07a7f463586a4a4e9d1ad89ac0019600ec80af258a648d
+        skill: migrate-to-shoehorn
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::prototype:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/prototype,/home/aaron/Code/multi-docker-compose/.opencode/skills/prototype
+        hash: 20996d9c591eff86c5f20b8db594ef728c8688b9605bc9543d9d65886523e3b2
+        skill: prototype
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::research:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/research,/home/aaron/Code/multi-docker-compose/.opencode/skills/research
+        hash: 6d02c11a6a7192f3e6058533e1cc310060cfceddd118623ea53e6d1da605d659
+        skill: research
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::resolving-merge-conflicts:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/resolving-merge-conflicts,/home/aaron/Code/multi-docker-compose/.opencode/skills/resolving-merge-conflicts
+        hash: 2c01ba50b0c9707fed7c9080add996caa5e14f05c9f910ad19198b426e645986
+        skill: resolving-merge-conflicts
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::scaffold-exercises:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/scaffold-exercises,/home/aaron/Code/multi-docker-compose/.opencode/skills/scaffold-exercises
+        hash: 30b24d603cdb7e0c82263f264e0a9b52f01188683f7083df88512457b5a9ecb6
+        skill: scaffold-exercises
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::setup-matt-pocock-skills:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/setup-matt-pocock-skills,/home/aaron/Code/multi-docker-compose/.opencode/skills/setup-matt-pocock-skills
+        hash: 132cfdc077fd448b262f2185ef5152f5d4a2c7ad637f0a7183da2d6880deb5e2
+        skill: setup-matt-pocock-skills
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::setup-pre-commit:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/setup-pre-commit,/home/aaron/Code/multi-docker-compose/.opencode/skills/setup-pre-commit
+        hash: de068adf75caf27aae0e80f201c5f4f7eda4f279388120ffb8e6b58533acf34a
+        skill: setup-pre-commit
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::setup-ts-deep-modules:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/setup-ts-deep-modules,/home/aaron/Code/multi-docker-compose/.opencode/skills/setup-ts-deep-modules
+        hash: 6502306a758ac25596550c7645d0a95b32c3f377959968f68ae43fafd448cf55
+        skill: setup-ts-deep-modules
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::tdd:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/tdd,/home/aaron/Code/multi-docker-compose/.opencode/skills/tdd
+        hash: 020e48193f19c303f462ac6c6bf16548f10e3b1f706df562f8fb8f6b3efb43a6
+        skill: tdd
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::teach:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/teach,/home/aaron/Code/multi-docker-compose/.opencode/skills/teach
+        hash: d646b14188296c5a2658360ac13e7236f1ec564ca4674052ad1c3d3c4fbba058
+        skill: teach
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::to-questionnaire:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/to-questionnaire,/home/aaron/Code/multi-docker-compose/.opencode/skills/to-questionnaire
+        hash: 3d3e99445e02a976bca6107ff081eda1fd05c2d509224f57cdb5ae73de5075ce
+        skill: to-questionnaire
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::to-spec:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/to-spec,/home/aaron/Code/multi-docker-compose/.opencode/skills/to-spec
+        hash: 14211cd48167ee7fd243fbb5a6ca380ec5641253298a3fbe779888ff93867f65
+        skill: to-spec
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::to-tickets:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/to-tickets,/home/aaron/Code/multi-docker-compose/.opencode/skills/to-tickets
+        hash: b9eb31fb1c671feb6ba56dc8afc86f5da9992aa307e9e0e0449aee2d4d55f1f2
+        skill: to-tickets
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::triage:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/triage,/home/aaron/Code/multi-docker-compose/.opencode/skills/triage
+        hash: 71bf2eed918085d4f6912a2b37369993b2b268b1557e4354e2ef1ba5954eafd6
+        skill: triage
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::wait-what:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/wait-what,/home/aaron/Code/multi-docker-compose/.opencode/skills/wait-what
+        hash: 89ae282bf3d8ef45ef22aec9610261d466c32e1e4cfb27b27d40e5f3cd197533
+        skill: wait-what
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::wayfinder:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/wayfinder,/home/aaron/Code/multi-docker-compose/.opencode/skills/wayfinder
+        hash: 462158ee37389454d44fd1b5e3d8ae5f75650fd621ae843a1d22a53082814b44
+        skill: wayfinder
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::wizard:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/wizard,/home/aaron/Code/multi-docker-compose/.opencode/skills/wizard
+        hash: c8bee82bf582b9889d08187819b273bafc700b3dbb2fcc00b2880225d43c22a8
+        skill: wizard
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::writing-beats:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/writing-beats,/home/aaron/Code/multi-docker-compose/.opencode/skills/writing-beats
+        hash: 9ce8e35b980128cee069da05b7213b1a223bdeed8c5478a4d8dd2fb318a9b6dd
+        skill: writing-beats
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::writing-for-agents:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/writing-for-agents,/home/aaron/Code/multi-docker-compose/.opencode/skills/writing-for-agents
+        hash: ab9bd0b8194e79b371583548024d57781eda0f6797d39d64f0bdd81ba585b705
+        skill: writing-for-agents
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::writing-fragments:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/writing-fragments,/home/aaron/Code/multi-docker-compose/.opencode/skills/writing-fragments
+        hash: 3be76523ce90b6ea60f884220ea250d898d438e7813f0907d7cc1016aab1e190
+        skill: writing-fragments
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+    https://github.com/mattpocock/skills::writing-shape:
+        destination: /home/aaron/Code/multi-docker-compose/.codex/skills/writing-shape,/home/aaron/Code/multi-docker-compose/.opencode/skills/writing-shape
+        hash: d2036087f7b91f97d5b9a01b5d2e71017530030af878b3da6a9c7fc9b0190b15
+        skill: writing-shape
+        description: '---'
+        source: https://github.com/mattpocock/skills
+        source_revision: branch:main
+        scope: project
+latest_report: '{"config":"/home/aaron/Code/multi-docker-compose/orqen.yaml","destination":"project","dry_run":false,"summary":{"installed":0,"updated":0,"removed":0,"unchanged":43,"broken":0,"failed":0},"actions":[{"source":"https://github.com/jeffallan/claude-skills","skill":"architecture-designer","status":"unchanged","error":null},{"source":"https://github.com/jeffallan/claude-skills","skill":"cli-developer","status":"unchanged","error":null},{"source":"https://github.com/jeffallan/claude-skills","skill":"code-documenter","status":"unchanged","error":null},{"source":"https://github.com/jeffallan/claude-skills","skill":"code-reviewer","status":"unchanged","error":null},{"source":"https://github.com/jeffallan/claude-skills","skill":"golang-pro","status":"unchanged","error":null},{"source":"https://github.com/jeffallan/claude-skills","skill":"security-reviewer","status":"unchanged","error":null},{"source":"https://github.com/jeffallan/claude-skills","skill":"test-master","status":"unchanged","error":null},{"source":"https://github.com/jeffallan/claude-skills","skill":"the-fool","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"ask-matt","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"claude-handoff","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"code-review","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"codebase-design","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"diagnosing-bugs","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"domain-modeling","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"git-guardrails-claude-code","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"grill-me","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"grill-with-docs","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"grilling","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"handoff","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"implement","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"improve-codebase-architecture","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"loop-me","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"migrate-to-shoehorn","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"prototype","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"research","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"resolving-merge-conflicts","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"scaffold-exercises","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"setup-matt-pocock-skills","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"setup-pre-commit","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"setup-ts-deep-modules","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"tdd","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"teach","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"to-questionnaire","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"to-spec","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"to-tickets","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"triage","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"wait-what","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"wayfinder","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"wizard","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"writing-beats","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"writing-for-agents","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"writing-fragments","status":"unchanged","error":null},{"source":"https://github.com/mattpocock/skills","skill":"writing-shape","status":"unchanged","error":null}]}'

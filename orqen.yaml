@@ -1,0 +1,19 @@
+agent:
+    - opencode
+    - crush
+    - codex
+    - command-code
+scope: project
+skills:
+    - source: https://github.com/jeffallan/claude-skills
+      skills:
+        - golang-pro
+        - cli-developer
+        - code-documenter
+        - architecture-designer
+        - code-reviewer
+        - security-reviewer
+        - test-master
+        - the-fool
+    - source: https://github.com/mattpocock/skills
+      skills: '*'
