@@ -18,7 +18,7 @@ run = "go mod tidy && hk install --mise"
 
 [tasks.run]
 description = "Run mdc with arguments"
-run = "go run . {{.CLI_ARGS}}"
+run = "go run ."
 
 [tasks.lint]
 description = "Format, vet, and lint the codebase"
