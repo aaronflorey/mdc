@@ -19,7 +19,7 @@
 - Don't add commands that target a single container or a single destination: attach, commit, cp, exec, export, port, run, publish, and the alpha commands.
 - For `SERVICE` arguments, skip projects that lack every requested service. Warn about names no project defines. Error only when nothing matches anywhere.
 - Never write to stdout/stderr directly while the live view runs. Compose services get discarded streams, and progress goes through `api.EventProcessor`.
-- Compose v5 needs Go >= 1.26.10. Keep `go.mod` and `mise.toml` in step, and copy compose's `exclude` block when bumping compose.
+- Compose v5 needs Go >= 1.26.10. Keep `go.mod` and `mise.toml` in step. Never add `replace` or `exclude` directives to `go.mod`: they break `go install github.com/aaronflorey/mdc@latest`.
 - Add dependencies only when code uses them.
 - Keep release automation compatible with release-please + goreleaser.
 - Verify UI changes in a real PTY (e.g. `tui-test`) against `fixtures/manual-demo`. `mise run lint` and `go test ./...` must pass.
